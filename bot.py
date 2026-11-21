@@ -101,6 +101,7 @@ class Bot:
         self.target_id = None
         self.damage_bearing = None
         self.damage_time = -math.inf
+        self.last_hit_time = -math.inf
 
     def incoming_shots(self, obs, pos, stats):
         threats = []
@@ -132,6 +133,8 @@ class Bot:
         for event in obs["events"]:
             if event["type"] == "damaged" and event.get("bearing") is not None:
                 self.damage_bearing, self.damage_time = event["bearing"], now
+            elif event["type"] == "hit":
+                self.last_hit_time = now
         secondary = me["weapons"][1]
         held = secondary["kind"] if secondary else None
         rank = {None: 0, "gun": 0, "laser": 1, "lightning": 2}
@@ -144,9 +147,9 @@ class Bot:
             if held:
                 act["drop"] = 1
         if obs["offer"]:
-            order = ["plating", "lightning_range", "nanites", "armor", "gun_mag",
-                     "gun_damage", "lightning_damage", "reactor", "servos", "gun_rate",
-                     "laser_damage", "laser_charge", "jets"]
+            order = ["lightning_range", "plating", "gun_mag", "nanites", "armor",
+                     "gun_damage", "gun_rate", "reactor", "lightning_efficiency",
+                     "gun_velocity", "servos", "laser_damage", "laser_charge", "jets"]
             choices = obs["offer"]["choices"]
             act["pick"] = min(range(len(choices)), key=lambda i:
                               order.index(choices[i]["id"]) if choices[i]["id"] in order else len(order))
@@ -165,6 +168,10 @@ class Bot:
         if target:
             self.target_id = target["id"]
         target_kind = target.get("kind", "crate") if target else None
+        target_distance = distance(pos, target["pos"]) if target else math.inf
+        finishing = (target_kind == "mech" and not wounded and len(nearby) <= 1
+                     and target_distance < 95 and target.get("hp", math.inf) < me["hp"] * 0.43)
+        opening = now < 65 and me["cubes"] < 5
         capture_radius = 0
         if urgent:
             goal = center
@@ -174,17 +181,22 @@ class Bot:
                 p = item["pos"]
                 if distance(p, zone["center"]) < zone["radius"] - 5 and abs(p[2]-pos[2]) < 8:
                     opportunities.append((distance(pos,p)-value, p, stop_radius))
-            if not nearby:
+            room_to_farm = not nearby or (opening and
+                           distance(pos, nearby[0]["pos"]) > 76 and now-self.damage_time > 5)
+            if room_to_farm:
                 for drop in obs["drops"]:
                     if drop["lands_in"] < 5 + distance(pos,drop["pos"])/stats["walk_speed"]:
-                        consider(drop, 145 if wounded else 105, drop["radius"] * 0.65)
+                        consider(drop, 175 if wounded else 105, drop["radius"] * 0.65)
                 for crate in obs["crates"]:
                     if me["cubes"] < self.cfg["cubes"]["stat_cap"]:
-                        consider(crate, 48, 8)
+                        consider(crate, 66 if opening else 48, 8)
                 if target_kind == "npc" and me["cubes"] < self.cfg["cubes"]["stat_cap"]:
                     consider(target, 85, 22)
             for item in loot:
-                consider(item, 85 if item["kind"] == "lightning" else 52, 2)
+                if item["kind"] == "lightning":
+                    consider(item, 140 if opening else 100, 2)
+                else:
+                    consider(item, 83 if opening else 52, 2)
             for cube in obs["cubes"]:
                 consider(cube, 86 if not nearby else 24, 2)
             if opportunities:
@@ -202,8 +214,10 @@ class Bot:
             weight = (1-d/110) * (3.5 if wounded or len(nearby) > 1 else 1.45)
             # Stay in the outer edge of arc range during favorable duels.
             if held == "lightning" and len(nearby) == 1 and not wounded:
-                ideal = secondary["stats"]["range"] * 0.74
-                weight = max(-1.8, min(2.2, (ideal-d)/9))
+                ideal = secondary["stats"]["range"] * (0.52 if finishing else 0.69)
+                weight = max(-3.4, min(2.2, (ideal-d)/7))
+            elif finishing and enemy["id"] == target["id"]:
+                weight = max(-2.7, (31-d)/10)
             pressure.append((angle(pos, enemy["pos"]), weight))
         slope = math.tan(math.radians(stats["max_slope_deg"]))
         for index in range(16):
@@ -240,8 +254,12 @@ class Bot:
             self.anchor, self.anchor_time = pos, now
         jet = now < self.jet_until and not stop
         act["jump"] = jet and me["grounded"]
-        act["boost"] = jet or (not stop and me["grounded"] and
-                             (urgent or (bool(nearby) and wounded)) and me["energy"] > 30)
+        can_sprint = not stop and me["grounded"]
+        rush_loot = opening and not nearby and capture_radius > 0 and distance(pos, goal) > 22
+        chase = finishing and target_distance > (38 if held == "lightning" else 50)
+        act["boost"] = jet or (can_sprint and (
+            (urgent or (bool(nearby) and wounded)) and me["energy"] > 30
+            or (rush_loot or chase) and me["energy"] > 66))
 
         gun = me["weapons"][0]
         act["reload"] = not target and gun["ammo"] < 0.78*gun["stats"]["mag"]
@@ -264,7 +282,8 @@ class Bot:
             aligned = (yaw_error < min(0.22, math.atan2(width, d) + stats["turn_rate"]*0.022)
                        and pitch_error < min(0.20, math.atan2(height*0.42, d) + stats["pitch_rate"]*0.022))
             clear = self.arena.clear_shot(muzzle, (pos[0]+x, pos[1]+y, aim_z))
-            engage = not (wounded and target_kind == "mech" and d > 78 and obs["alive"] > 2
+            breathing_room = d > 70 and now-self.damage_time > 2.3 and now-self.last_hit_time > 1.4
+            engage = not (wounded and target_kind == "mech" and breathing_room and obs["alive"] > 2
                           and target.get("hp", math.inf) > 150)
             fire = [clear and aligned and engage and d < gun["stats"]["range"], False]
             if laser and engage:
@@ -278,7 +297,8 @@ class Bot:
                 act["reload"] = True
             act["fire"] = fire
         else:
-            yaw = self.damage_bearing if now-self.damage_time < 2.8 else self.heading
+            scan = math.sin(now*2.3) * (0.9 if opening else 0.53)
+            yaw = self.damage_bearing if now-self.damage_time < 2.8 else wrap(self.heading + scan)
             act["aim"] = [yaw, 0]
         return act
 
