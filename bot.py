@@ -87,6 +87,20 @@ class Arena:
                 return False
         return True
 
+    def clear_arc(self, origin, direction, speed, gravity, duration):
+        steps = max(1, math.ceil(duration * speed / self.cell))
+        vx, vy, vz = (component * speed for component in direction)
+        for index in range(1, steps):
+            t = duration * index / steps
+            x, y = origin[0] + vx*t, origin[1] + vy*t
+            z = origin[2] + vz*t - 0.5*gravity*t*t
+            if z < self.ground(x, y):
+                return False
+            spans = self.solids.get((math.floor(x/self.cell), math.floor(y/self.cell)), ())
+            if any(base < z < top for base, top in spans):
+                return False
+        return True
+
 
 class Bot:
     name = "Pocket Comet"
@@ -123,6 +137,43 @@ class Bot:
                 threats.append((eta, miss, vy/math.sqrt(speed_sq), -vx/math.sqrt(speed_sq)))
         return sorted(threats)[:10]
 
+    def mortar_aim(self, me, target, target_height, mortar):
+        """Lead the target along the lower ballistic arc when the path is open."""
+        weapon = mortar["stats"]
+        speed, gravity = weapon["speed"], weapon["gravity"]
+        pos, p, stats = me["pos"], target["pos"], me["stats"]
+        v = target.get("vel", (0, 0, 0))
+        d = distance(pos, p)
+        if not 31 < d < 132 or abs(v[2]) > 3:
+            return None
+        launch_distance = stats["radius"] + 0.5
+        muzzle = (pos[0], pos[1], pos[2] + stats["height"] + 0.5)
+        flight = (d-launch_distance)/speed
+        speed_sq = speed*speed
+        pitch = 0.0
+        for _ in range(4):
+            x = p[0] + v[0]*(flight+0.06) - muzzle[0]
+            y = p[1] + v[1]*(flight+0.06) - muzzle[1]
+            # Limit extrapolation of vertical motion near a floor or roof.
+            z = (p[2] + target_height*0.46 + max(-1, min(1, v[2]*flight))
+                 - muzzle[2] - launch_distance*math.sin(pitch))
+            horizontal = max(1, math.hypot(x, y) - launch_distance*math.cos(pitch))
+            numerator = gravity*horizontal**2 + 2*z*speed_sq
+            discriminant = speed_sq**2 - gravity*numerator
+            if discriminant <= 0:
+                return None
+            pitch = math.atan2(numerator, horizontal*(speed_sq + math.sqrt(discriminant)))
+            flight = horizontal/(speed*math.cos(pitch))
+        if not stats["min_pitch"] <= pitch <= stats["max_pitch"]:
+            return None
+        yaw = math.atan2(y, x)
+        cos_pitch = math.cos(pitch)
+        direction = (cos_pitch*math.cos(yaw), cos_pitch*math.sin(yaw), math.sin(pitch))
+        origin = tuple(muzzle[i] + launch_distance*direction[i] for i in range(3))
+        if self.arena.clear_arc(origin, direction, speed, gravity, flight):
+            return yaw, pitch
+        return None
+
     def act(self, obs):
         me, zone, now = obs["self"], obs["zone"], obs["t"]
         pos, stats = me["pos"], me["stats"]
@@ -137,8 +188,10 @@ class Bot:
                 self.last_hit_time = now
         secondary = me["weapons"][1]
         held = secondary["kind"] if secondary else None
-        rank = {None: 0, "gun": 0, "laser": 1, "lightning": 2}
+        rank = {None: 0, "gun": 0, "mortar": 1, "laser": 2, "lightning": 3}
         loot = [p for p in obs["pickups"] if rank.get(p["kind"], 0) > rank.get(held, 0)]
+        if any("laser" in enemy.get("weapons", ()) for enemy in nearby):
+            loot = [p for p in loot if p["kind"] != "mortar"]
         act = {"tick": obs["tick"]}
         reachable = [p for p in loot if distance(pos, p["pos"]) <= self.cfg["loot"]["pickup_radius"]
                      and abs(pos[2] - p["pos"][2]) <= 4]
@@ -146,10 +199,14 @@ class Bot:
             act["take"] = max(reachable, key=lambda p: rank[p["kind"]])["id"]
             if held:
                 act["drop"] = 1
+        elif held == "mortar" and any(enemy.get("charging") for enemy in nearby):
+            # Dropping the mortar removes its vulnerability to a charged laser.
+            act["drop"] = 1
         if obs["offer"]:
             order = ["lightning_range", "plating", "gun_mag", "nanites", "armor",
                      "gun_damage", "gun_rate", "reactor", "lightning_efficiency",
-                     "gun_velocity", "servos", "laser_damage", "laser_charge", "jets"]
+                     "gun_velocity", "servos", "laser_damage", "laser_charge",
+                     "mortar_reload", "mortar_velocity", "mortar_splash", "jets"]
             choices = obs["offer"]["choices"]
             act["pick"] = min(range(len(choices)), key=lambda i:
                               order.index(choices[i]["id"]) if choices[i]["id"] in order else len(order))
@@ -195,6 +252,8 @@ class Bot:
             for item in loot:
                 if item["kind"] == "lightning":
                     consider(item, 140 if opening else 100, 2)
+                elif item["kind"] == "mortar":
+                    consider(item, 46 if opening else 32, 2)
                 else:
                     consider(item, 83 if opening else 52, 2)
             for cube in obs["cubes"]:
@@ -293,6 +352,13 @@ class Bot:
                 shot_range = math.dist(muzzle, (p[0], p[1], p[2] + height*0.5))
                 fire[1] = (clear and engage and shot_range < secondary["stats"]["range"]
                            and yaw_error < math.radians(secondary["stats"]["cone_deg"])*0.82)
+            elif held == "mortar" and "drop" not in act and engage and secondary["cooldown"] <= 0.07:
+                mortar_aim = self.mortar_aim(me, target, height, secondary)
+                if mortar_aim:
+                    arc_yaw, arc_pitch = mortar_aim
+                    act["aim"] = [arc_yaw, arc_pitch]
+                    fire = [False, abs(wrap(arc_yaw-me["aim"][0])) < 0.10
+                            and abs(arc_pitch-me["aim"][1]) < 0.085]
             if not clear and gun["ammo"] < gun["stats"]["mag"] * 0.35:
                 act["reload"] = True
             act["fire"] = fire
