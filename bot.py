@@ -1,11 +1,10 @@
 """Mech Royale bot v2: laser sniper that keeps house bots at long range, camps the zone edge
 away from enemies, farms cubes early, and breaks line of sight when focused."""
 import math, random, sys, time, os
-F = set(os.environ.get("FLAGS", "patrol,nohide,zfix,dodge,drop").split(","))
+F = set(os.environ.get("FLAGS", "patrol,nohide,zfix,dodge").split(","))
 E = lambda k, d: float(os.environ.get(k, d))
-PFRAC = E("PFRAC", 0.52); PSPD = E("PSPD", 0.043); FARMT = E("FARMT", 150); FARMC = E("FARMC", 6); TRL = E("TRL", 220); TRN = E("TRN", 180); NL = E("NL", 150); NN = E("NN", 105); KW = E("KW", 1.0); WOUND = E("WOUND", 0.62); AVR = E("AVR", 130); AVW = E("AVW", 0.8)
+PFRAC = E("PFRAC", 0.85); PSPD = E("PSPD", 0.043); FARMT = E("FARMT", 150); FARMC = E("FARMC", 6); TRL = E("TRL", 220); TRN = E("TRN", 180); NL = E("NL", 150); NN = E("NN", 105); KW = E("KW", 1.0); WOUND = E("WOUND", 0.62); AVR = E("AVR", 130); AVW = E("AVW", 0.8)
 import mechfight as mf
-PHASE_SALT = 3  # seeds the patrol phase only; any value gives the same expected strength
 from geo import Map, AStar, DET
 
 TAU = 2 * math.pi
@@ -29,12 +28,12 @@ def ang(a, b):
 
 
 class Bot:
-    name = "comet-v5"
+    name = "comet-v6"
 
     def __init__(self, hello):
         self.cfg = hello['config']
         self.id = hello['slot']
-        self.rng = random.Random(hello.get('seed', 0) * 7919 + PHASE_SALT)
+        self.rng = random.Random(hello.get('seed', 0))
         self.phase = self.rng.uniform(-math.pi, math.pi)
         self.m = Map()
         self.attackers = {}
