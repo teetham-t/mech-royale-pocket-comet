@@ -11,9 +11,6 @@ import time
 
 import mechfight as mf
 
-# Seeds the patrol/strafe phase only; any value gives the same expected strength.
-PHASE_SALT = 2
-
 
 def distance(a, b):
     return math.hypot(a[0] - b[0], a[1] - b[1])
@@ -172,7 +169,7 @@ class Bot:
     def __init__(self, hello):
         self.cfg = hello["config"]
         self.arena = Arena(hello["map"]["dir"])
-        self.phase = random.Random(hello["seed"] * 7919 + PHASE_SALT).uniform(-math.pi, math.pi)
+        self.phase = random.Random(hello["seed"]).uniform(-math.pi, math.pi)
         self.heading = self.phase
         self.anchor = None
         self.anchor_time = self.jet_until = 0
@@ -298,6 +295,9 @@ class Bot:
                      and target_distance < 95 and target.get("hp", math.inf) < me["hp"] * 0.43)
         opening = now < 65 and me["cubes"] < 5
         capture_radius = 0
+        # Early crate farming: cubes are +4% HP and damage each, and crates can drop weapons.
+        farm_window = (now < 150 and me["cubes"] < 6
+                       and not any(distance(pos, e["pos"]) < 90 for e in enemies))
         laser_run = False
         if urgent:
             goal = center
@@ -320,13 +320,13 @@ class Bot:
                     opportunities.append((distance(pos,p)-value, p, stop_radius))
             room_to_farm = not nearby or (opening and
                            distance(pos, nearby[0]["pos"]) > 76 and now-self.damage_time > 5)
-            if room_to_farm:
+            if room_to_farm or farm_window:
                 for drop in obs["drops"]:
                     if drop["lands_in"] < 5 + distance(pos,drop["pos"])/stats["walk_speed"]:
                         consider(drop, 175 if wounded else 105, drop["radius"] * 0.65)
                 for crate in obs["crates"]:
                     if me["cubes"] < self.cfg["cubes"]["stat_cap"]:
-                        consider(crate, 66 if opening else 48, 8)
+                        consider(crate, 130 if farm_window else (66 if opening else 48), 8)
                 if target_kind == "npc" and me["cubes"] < self.cfg["cubes"]["stat_cap"]:
                     consider(target, 85, 22)
             for item in loot:
@@ -511,7 +511,8 @@ class Bot:
         if wounded or urgent or (enemies and distance(pos, enemies[0]["pos"]) < 85):
             return enemies[0] if enemies else None
         farm = [m for m in obs["mechs"] if m["kind"] == "npc" and distance(pos, m["pos"]) < 77]
-        farm.extend(c for c in obs["crates"] if distance(pos, c["pos"]) < 62)
+        crate_reach = 110 if obs["t"] < 150 and obs["self"]["cubes"] < 6 else 62
+        farm.extend(c for c in obs["crates"] if distance(pos, c["pos"]) < crate_reach)
         ordered = sorted(farm, key=lambda item: (distance(pos, item["pos"])
                          - 17*(item.get("kind") == "npc") - 14*(item["id"] == self.target_id)))
         for item in ordered[:6]:
