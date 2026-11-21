@@ -198,7 +198,7 @@ class Bot:
                     consider(target, 85, 22)
             for item in loot:
                 if item["kind"] == "lightning":
-                    consider(item, 140 if opening else 100, 2)
+                    consider(item, 220 if opening else 170, 2)
                 else:
                     consider(item, 83 if opening else 52, 2)
             for cube in obs["cubes"]:
@@ -218,7 +218,7 @@ class Bot:
             weight = (1-d/110) * (3.5 if wounded or len(nearby) > 1 else 1.45)
             # Stay in the outer edge of arc range during favorable duels.
             if held == "lightning" and len(nearby) == 1 and not wounded:
-                ideal = secondary["stats"]["range"] * (0.52 if finishing else 0.69)
+                ideal = secondary["stats"]["range"] * (0.45 if finishing else 0.56)
                 weight = max(-3.4, min(2.2, (ideal-d)/7))
             elif finishing and enemy["id"] == target["id"]:
                 weight = max(-2.7, (31-d)/10)
@@ -260,7 +260,8 @@ class Bot:
         act["jump"] = jet and me["grounded"]
         can_sprint = not stop and me["grounded"]
         rush_loot = opening and not nearby and capture_radius > 0 and distance(pos, goal) > 22
-        chase = finishing and target_distance > (38 if held == "lightning" else 50)
+        chase = (finishing and target_distance > (38 if held == "lightning" else 50)) or (
+            held == "lightning" and target_kind == "mech" and not wounded and len(nearby) <= 1 and 34 < target_distance < 90)
         act["boost"] = jet or (can_sprint and (
             (urgent or (bool(nearby) and wounded)) and me["energy"] > 30
             or (rush_loot or chase) and me["energy"] > 66))
@@ -311,7 +312,7 @@ class Bot:
         # Practice house bots hunt as a squad: only fight mechs that threaten us or are nearly dead,
         # so we do not wake up passive squad members far away.
         now = obs["t"]
-        enemies = [e for e in enemies if distance(pos, e["pos"]) < 60
+        enemies = [e for e in enemies if distance(pos, e["pos"]) < 90
                    or now - self.attackers.get(e["id"], -99) < 6
                    or e.get("hp", 1400) < 450
                    or e["id"] == self.target_id and distance(pos, e["pos"]) < 130]
