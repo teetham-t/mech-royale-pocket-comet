@@ -103,9 +103,7 @@ class Bot:
         self.damage_time = -math.inf
         self.last_hit_time = -math.inf
         self.attackers = {}  # mech id -> last time it damaged us
-        self.seen_pos = {}
-        self.anchor_goal = None
-        self.anchor_goal_t = -99
+        self.full_since = None
 
     def incoming_shots(self, obs, pos, stats):
         threats = []
@@ -132,7 +130,9 @@ class Bot:
         pos, stats = me["pos"], me["stats"]
         enemies = sorted((m for m in obs["mechs"] if m["kind"] == "mech"),
                          key=lambda m: distance(pos, m["pos"]))
-        nearby = [m for m in enemies if distance(pos, m["pos"]) < 105]
+        secondary0 = me["weapons"][1]
+        sniping = bool(secondary0) and secondary0["kind"] == "laser"
+        nearby = [m for m in enemies if distance(pos, m["pos"]) < (150 if sniping else 105)]
         wounded = me["hp"] < 0.62 * me["max_hp"]
         for event in obs["events"]:
             if event["type"] == "damaged" and event.get("bearing") is not None:
@@ -143,7 +143,7 @@ class Bot:
                 self.last_hit_time = now
         secondary = me["weapons"][1]
         held = secondary["kind"] if secondary else None
-        rank = {None: 0, "gun": 0, "laser": 1, "lightning": 2}
+        rank = {None: 0, "gun": 0, "mortar": 0, "lightning": 1, "laser": 2}
         loot = [p for p in obs["pickups"] if rank.get(p["kind"], 0) > rank.get(held, 0)]
         act = {"tick": obs["tick"]}
         reachable = [p for p in loot if distance(pos, p["pos"]) <= self.cfg["loot"]["pickup_radius"]
@@ -153,8 +153,8 @@ class Bot:
             if held:
                 act["drop"] = 1
         if obs["offer"]:
-            order = ["plating", "armor", "gun_damage", "gun_rate", "lightning_efficiency", "laser_damage",
-                     "nanites", "lightning_range", "laser_charge", "gun_mag", "lightning_chain", "gyros",
+            order = ["laser_charge", "laser_damage", "plating", "armor", "nanites", "gun_damage", "gun_rate",
+                     "lightning_efficiency", "lightning_range", "gun_mag", "lightning_chain", "gyros",
                      "gun_velocity", "reactor", "servos", "mortar_reload", "mortar_splash", "capacitor",
                      "mortar_velocity", "jets", "sensors", "laser_pierce"]
             choices = obs["offer"]["choices"]
@@ -168,30 +168,9 @@ class Bot:
         urgent = (not me["in_zone"] or (excess > 0 and
                   zone["shrink_end"] - now < 10 + travel*1.8) or
                   distance(pos, zone["center"]) > zone["radius"] - 6)
-        # Camp near the zone edge on the side away from where the squad has been seen.
-        for e in obs["mechs"]:
-            if e["kind"] == "mech":
-                self.seen_pos[e["id"]] = (e["pos"][0], e["pos"][1])
-        if self.anchor_goal is None or now - self.anchor_goal_t > 12 or distance(self.anchor_goal, center) > radius * 0.85:
-            if self.seen_pos:
-                cx = sum(p[0] for p in self.seen_pos.values()) / len(self.seen_pos)
-                cy = sum(p[1] for p in self.seen_pos.values()) / len(self.seen_pos)
-                away = math.atan2(center[1] - cy, center[0] - cx)
-            else:
-                away = math.atan2(pos[1] - center[1], pos[0] - center[0])
-            best_pt, best_cost = None, math.inf
-            for k in range(-3, 4):
-                a = away + k * 0.35
-                for frac in (0.62, 0.72):
-                    x, y = center[0] + math.cos(a) * radius * frac, center[1] + math.sin(a) * radius * frac
-                    if self.arena.obstructed(x, y, self.arena.ground(x, y), stats):
-                        continue
-                    cost = abs(k) * 12 + distance(pos, (x, y)) * 0.15
-                    if cost < best_cost:
-                        best_pt, best_cost = (x, y), cost
-            self.anchor_goal = best_pt or (center[0], center[1])
-            self.anchor_goal_t = now
-        goal = self.anchor_goal
+        # Patrol a safe interior band, leaving the middle available for rotation.
+        a = self.phase + now*0.043
+        goal = (center[0]+math.cos(a)*radius*0.52, center[1]+math.sin(a)*radius*0.52)
         target = self.choose_target(obs, pos, stats, enemies, wounded, urgent)
         if target:
             self.target_id = target["id"]
@@ -221,8 +200,10 @@ class Bot:
                 if target_kind == "npc" and me["cubes"] < self.cfg["cubes"]["stat_cap"]:
                     consider(target, 85, 22)
             for item in loot:
-                if item["kind"] == "lightning":
-                    consider(item, 140 if opening else 100, 2)
+                if item["kind"] == "laser":
+                    consider(item, 220 if opening else 170, 2)
+                elif item["kind"] == "lightning":
+                    consider(item, 120 if opening else 80, 2)
                 else:
                     consider(item, 83 if opening else 52, 2)
             for cube in obs["cubes"]:
@@ -241,7 +222,9 @@ class Bot:
             d = distance(pos, enemy["pos"])
             weight = (1-d/110) * (3.5 if wounded or len(nearby) > 1 else 1.45)
             # Stay in the outer edge of arc range during favorable duels.
-            if held == "lightning" and len(nearby) == 1 and not wounded:
+            if held == "laser":
+                weight = max(0.3, min(3.0, (150 - d) / 25)) * (1.4 if wounded else 1.0)
+            elif held == "lightning" and len(nearby) == 1 and not wounded:
                 ideal = secondary["stats"]["range"] * (0.52 if finishing else 0.69)
                 weight = max(-3.4, min(2.2, (ideal-d)/7))
             elif finishing and enemy["id"] == target["id"]:
@@ -285,7 +268,8 @@ class Bot:
         can_sprint = not stop and me["grounded"]
         rush_loot = opening and not nearby and capture_radius > 0 and distance(pos, goal) > 22
         chase = finishing and target_distance > (38 if held == "lightning" else 50)
-        act["boost"] = jet or (can_sprint and (
+        kite = sniping and can_sprint and any(distance(pos, e["pos"]) < 95 for e in nearby) and me["energy"] > 25
+        act["boost"] = jet or kite or (can_sprint and (
             (urgent or (bool(nearby) and wounded)) and me["energy"] > 30
             or (rush_loot or chase) and me["energy"] > 66))
 
@@ -299,7 +283,7 @@ class Bot:
             muzzle = (pos[0], pos[1], pos[2] + stats["muzzle_height"])
             laser = (held == "laser" and secondary["cooldown"] <= 0
                      and d < secondary["stats"]["range"] and (not wounded or len(nearby) <= 1))
-            lead = 0.035 if laser else d/gun["stats"]["speed"] + 0.035
+            lead = 0.1 if laser else d/gun["stats"]["speed"] + 0.035
             x, y = p[0]+velocity[0]*lead-pos[0], p[1]+velocity[1]*lead-pos[1]
             yaw = math.atan2(y,x)
             aim_z = p[2] + height*0.52 + velocity[2]*lead
@@ -315,8 +299,16 @@ class Bot:
                           and target.get("hp", math.inf) > 150)
             fire = [clear and aligned and engage and d < gun["stats"]["range"], False]
             if laser and engage:
-                fire[1] = clear and (secondary.get("charge",0) < secondary["stats"]["charge"]-0.01 or not aligned)
-                fire[0] = fire[0] and d < 38
+                full = secondary.get("charge", 0) >= secondary["stats"]["charge"] - 0.01
+                if full and self.full_since is None:
+                    self.full_since = now
+                if not full:
+                    self.full_since = None
+                tight = (yaw_error < math.atan2(width * 0.55, d) + 0.003
+                         and pitch_error < math.atan2(height * 0.35, d) + 0.004)
+                overdue = self.full_since is not None and now - self.full_since > 1.5
+                fire[1] = clear and not (full and (tight or overdue))
+                fire[0] = fire[0] and d < 60
             elif held == "lightning":
                 shot_range = math.dist(muzzle, (p[0], p[1], p[2] + height*0.5))
                 fire[1] = (clear and engage and shot_range < secondary["stats"]["range"]
@@ -335,7 +327,8 @@ class Bot:
         # Practice house bots hunt as a squad: only fight mechs that threaten us or are nearly dead,
         # so we do not wake up passive squad members far away.
         now = obs["t"]
-        enemies = [e for e in enemies if distance(pos, e["pos"]) < 60
+        snipe = bool(obs["self"]["weapons"][1]) and obs["self"]["weapons"][1]["kind"] == "laser"
+        enemies = [e for e in enemies if distance(pos, e["pos"]) < (150 if snipe else 90)
                    or now - self.attackers.get(e["id"], -99) < 6
                    or e.get("hp", 1400) < 450
                    or e["id"] == self.target_id and distance(pos, e["pos"]) < 130]
