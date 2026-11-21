@@ -355,6 +355,17 @@ class Bot:
                    or now - self.attackers.get(e["id"], -99) < 6
                    or e.get("hp", 1400) < 450
                    or e["id"] == self.target_id and distance(pos, e["pos"]) < 130]
+        # Shoot back at drones that hit us in the last 5 s, unless a mech is within 60 m.
+        if not any(distance(pos, e["pos"]) < 60 for e in enemies):
+            drones = sorted((m for m in obs["mechs"] if m["kind"] == "npc"
+                             and now - self.attackers.get(m["id"], -99) <= 5
+                             and distance(pos, m["pos"]) < 90),
+                            key=lambda m: distance(pos, m["pos"]))
+            for drone in drones:
+                q = drone["pos"]
+                _, h = target_size(self.cfg, drone)
+                if self.arena.clear_shot(muzzle, (q[0], q[1], q[2] + h * 0.52)):
+                    return drone
         visible = []
         for enemy in enemies[:7]:
             d = distance(pos, enemy["pos"])
