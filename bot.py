@@ -5,7 +5,7 @@ F = set(os.environ.get("FLAGS", "patrol,nohide,zfix").split(","))
 E = lambda k, d: float(os.environ.get(k, d))
 PFRAC = E("PFRAC", 0.52); PSPD = E("PSPD", 0.043); FARMT = E("FARMT", 150); FARMC = E("FARMC", 6); TRL = E("TRL", 220); TRN = E("TRN", 180); NL = E("NL", 150); NN = E("NN", 105); KW = E("KW", 1.0); WOUND = E("WOUND", 0.62); AVR = E("AVR", 130); AVW = E("AVW", 0.8)
 import mechfight as mf
-PHASE_SALT = 1  # seeds the patrol phase only; any value gives the same expected strength
+PHASE_SALT = 2  # seeds the patrol phase only; any value gives the same expected strength
 from geo import Map, AStar, DET
 
 TAU = 2 * math.pi
