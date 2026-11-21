@@ -78,12 +78,14 @@ class Arena:
 
     def clear_shot(self, origin, target):
         dx, dy, dz = (target[i] - origin[i] for i in range(3))
-        steps = min(64, max(1, math.ceil(math.hypot(dx, dy) / self.cell)))
+        steps = min(96, max(1, math.ceil(math.hypot(dx, dy) / 2.5)))
         for i in range(1, steps):
             t = i / steps
             x, y, z = origin[0] + t*dx, origin[1] + t*dy, origin[2] + t*dz
             spans = self.solids.get((math.floor(x/self.cell), math.floor(y/self.cell)), ())
             if any(base + 0.4 < z < top - 0.4 for base, top in spans):
+                return False
+            if z < self.ground(x, y) - 0.3:
                 return False
         return True
 
@@ -186,7 +188,11 @@ class Bot:
             opportunities = []
             def consider(item, value, stop_radius=0):
                 p = item["pos"]
-                if distance(p, zone["center"]) < zone["radius"] - 5 and abs(p[2]-pos[2]) < 8:
+                # Reachable if it lies on the ground (any terrain height), or on a roof low
+                # enough to jet onto (worth it only for valuable items).
+                above = p[2] - self.arena.ground(p[0], p[1])
+                reachable = above < 2.5 or (above < 30 and value >= 80 and me["energy"] > 40)
+                if distance(p, zone["center"]) < zone["radius"] - 5 and reachable:
                     opportunities.append((distance(pos,p)-value, p, stop_radius))
             room_to_farm = not nearby or (opening and
                            distance(pos, nearby[0]["pos"]) > 76 and now-self.damage_time > 5)
@@ -306,8 +312,13 @@ class Bot:
                     self.full_since = None
                 tight = (yaw_error < math.atan2(width * 0.55, d) + 0.003
                          and pitch_error < math.atan2(height * 0.35, d) + 0.004)
-                overdue = self.full_since is not None and now - self.full_since > 1.5
-                fire[1] = clear and not (full and (tight or overdue))
+                overdue = self.full_since is not None and now - self.full_since > 1.6
+                charging = secondary.get("charge", 0) > 0
+                if charging:
+                    # never release into cover; hold until lined up (the game auto-fires at 2 s)
+                    fire[1] = not (clear and full and (tight or overdue))
+                else:
+                    fire[1] = clear and yaw_error < 0.35
                 fire[0] = fire[0] and d < 60
             elif held == "lightning":
                 shot_range = math.dist(muzzle, (p[0], p[1], p[2] + height*0.5))
