@@ -103,6 +103,9 @@ class Bot:
         self.damage_time = -math.inf
         self.last_hit_time = -math.inf
         self.attackers = {}  # mech id -> last time it damaged us
+        self.seen_pos = {}
+        self.anchor_goal = None
+        self.anchor_goal_t = -99
 
     def incoming_shots(self, obs, pos, stats):
         threats = []
@@ -165,9 +168,30 @@ class Bot:
         urgent = (not me["in_zone"] or (excess > 0 and
                   zone["shrink_end"] - now < 10 + travel*1.8) or
                   distance(pos, zone["center"]) > zone["radius"] - 6)
-        # Patrol a safe interior band, leaving the middle available for rotation.
-        a = self.phase + now*0.043
-        goal = (center[0]+math.cos(a)*radius*0.52, center[1]+math.sin(a)*radius*0.52)
+        # Camp near the zone edge on the side away from where the squad has been seen.
+        for e in obs["mechs"]:
+            if e["kind"] == "mech":
+                self.seen_pos[e["id"]] = (e["pos"][0], e["pos"][1])
+        if self.anchor_goal is None or now - self.anchor_goal_t > 12 or distance(self.anchor_goal, center) > radius * 0.85:
+            if self.seen_pos:
+                cx = sum(p[0] for p in self.seen_pos.values()) / len(self.seen_pos)
+                cy = sum(p[1] for p in self.seen_pos.values()) / len(self.seen_pos)
+                away = math.atan2(center[1] - cy, center[0] - cx)
+            else:
+                away = math.atan2(pos[1] - center[1], pos[0] - center[0])
+            best_pt, best_cost = None, math.inf
+            for k in range(-3, 4):
+                a = away + k * 0.35
+                for frac in (0.62, 0.72):
+                    x, y = center[0] + math.cos(a) * radius * frac, center[1] + math.sin(a) * radius * frac
+                    if self.arena.obstructed(x, y, self.arena.ground(x, y), stats):
+                        continue
+                    cost = abs(k) * 12 + distance(pos, (x, y)) * 0.15
+                    if cost < best_cost:
+                        best_pt, best_cost = (x, y), cost
+            self.anchor_goal = best_pt or (center[0], center[1])
+            self.anchor_goal_t = now
+        goal = self.anchor_goal
         target = self.choose_target(obs, pos, stats, enemies, wounded, urgent)
         if target:
             self.target_id = target["id"]
@@ -198,7 +222,7 @@ class Bot:
                     consider(target, 85, 22)
             for item in loot:
                 if item["kind"] == "lightning":
-                    consider(item, 220 if opening else 170, 2)
+                    consider(item, 140 if opening else 100, 2)
                 else:
                     consider(item, 83 if opening else 52, 2)
             for cube in obs["cubes"]:
@@ -218,7 +242,7 @@ class Bot:
             weight = (1-d/110) * (3.5 if wounded or len(nearby) > 1 else 1.45)
             # Stay in the outer edge of arc range during favorable duels.
             if held == "lightning" and len(nearby) == 1 and not wounded:
-                ideal = secondary["stats"]["range"] * (0.45 if finishing else 0.56)
+                ideal = secondary["stats"]["range"] * (0.52 if finishing else 0.69)
                 weight = max(-3.4, min(2.2, (ideal-d)/7))
             elif finishing and enemy["id"] == target["id"]:
                 weight = max(-2.7, (31-d)/10)
@@ -260,8 +284,7 @@ class Bot:
         act["jump"] = jet and me["grounded"]
         can_sprint = not stop and me["grounded"]
         rush_loot = opening and not nearby and capture_radius > 0 and distance(pos, goal) > 22
-        chase = (finishing and target_distance > (38 if held == "lightning" else 50)) or (
-            held == "lightning" and target_kind == "mech" and not wounded and len(nearby) <= 1 and 34 < target_distance < 90)
+        chase = finishing and target_distance > (38 if held == "lightning" else 50)
         act["boost"] = jet or (can_sprint and (
             (urgent or (bool(nearby) and wounded)) and me["energy"] > 30
             or (rush_loot or chase) and me["energy"] > 66))
@@ -312,7 +335,7 @@ class Bot:
         # Practice house bots hunt as a squad: only fight mechs that threaten us or are nearly dead,
         # so we do not wake up passive squad members far away.
         now = obs["t"]
-        enemies = [e for e in enemies if distance(pos, e["pos"]) < 90
+        enemies = [e for e in enemies if distance(pos, e["pos"]) < 60
                    or now - self.attackers.get(e["id"], -99) < 6
                    or e.get("hp", 1400) < 450
                    or e["id"] == self.target_id and distance(pos, e["pos"]) < 130]
