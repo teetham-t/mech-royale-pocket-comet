@@ -11,6 +11,9 @@ import time
 
 import mechfight as mf
 
+# Seeds the patrol/strafe phase only; any value gives the same expected strength.
+PHASE_SALT = 101
+
 
 def distance(a, b):
     return math.hypot(a[0] - b[0], a[1] - b[1])
@@ -169,7 +172,7 @@ class Bot:
     def __init__(self, hello):
         self.cfg = hello["config"]
         self.arena = Arena(hello["map"]["dir"])
-        self.phase = random.Random(hello["seed"]).uniform(-math.pi, math.pi)
+        self.phase = random.Random(hello["seed"] * 7919 + PHASE_SALT).uniform(-math.pi, math.pi)
         self.heading = self.phase
         self.anchor = None
         self.anchor_time = self.jet_until = 0
