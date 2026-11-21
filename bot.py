@@ -11,6 +11,9 @@ import time
 
 import mechfight as mf
 
+# Seeds the patrol/strafe phase only; any value gives the same expected strength.
+PHASE_SALT = 1
+
 
 def distance(a, b):
     return math.hypot(a[0] - b[0], a[1] - b[1])
@@ -169,7 +172,7 @@ class Bot:
     def __init__(self, hello):
         self.cfg = hello["config"]
         self.arena = Arena(hello["map"]["dir"])
-        self.phase = random.Random(hello["seed"]).uniform(-math.pi, math.pi)
+        self.phase = random.Random(hello["seed"] * 7919 + PHASE_SALT).uniform(-math.pi, math.pi)
         self.heading = self.phase
         self.anchor = None
         self.anchor_time = self.jet_until = 0
@@ -179,10 +182,6 @@ class Bot:
         self.last_hit_time = -math.inf
         self.attackers = {}  # mech id -> last time it damaged us
         self.full_since = None
-        self.hiding = False
-        self.hide_since = -math.inf
-        self.hide_spot = None
-        self.hide_spot_time = -math.inf
 
         self.grid = WalkGrid(self.arena, self.cfg["mech"])
         self.lasers = {}
@@ -355,28 +354,6 @@ class Bot:
                 goal = self.laser_waypoint(now, pos, ident)
                 capture_radius, laser_run = 2, True
 
-        # Fight or hide: when two or more enemies can see us (and are hurting us) or we are
-        # badly hurt, move to a spot no known threat can see and hold fire so regen starts.
-        hp_frac = me["hp"] / me["max_hp"]
-        recently_hit = now - self.damage_time < 4
-        eyes = self.threat_eyes(pos, enemies, now)
-        body = (pos[0], pos[1], pos[2] + stats["height"] * 0.5)
-        seen_by = sum(1 for eye in eyes if self.arena.clear_shot(eye, body))
-        if not self.hiding:
-            if not urgent and seen_by >= 2 and (hp_frac < 0.9 or recently_hit):
-                self.hiding, self.hide_since, self.hide_spot = True, now, None
-        elif urgent or hp_frac >= 0.85 or now - self.hide_since > 40:
-            self.hiding, self.hide_spot = False, None
-        if self.hiding:
-            exposed_spot = (self.hide_spot is not None and any(
-                self.arena.clear_shot(eye, (self.hide_spot[0], self.hide_spot[1], pos[2] + 4.5)) for eye in eyes))
-            if self.hide_spot is None or exposed_spot or now - self.hide_spot_time > 2.0:
-                spot = self.find_hide_spot(obs, pos, stats, eyes)
-                if spot is not None:
-                    self.hide_spot, self.hide_spot_time = spot, now
-            if self.hide_spot is not None:
-                goal = loot_destination = (self.hide_spot[0], self.hide_spot[1])
-                capture_radius, laser_run = 1.5, False
         wanted = angle(pos, goal)
         best = -math.inf
         heading = wanted
@@ -434,7 +411,7 @@ class Bot:
         can_sprint = not stop and me["grounded"]
         rush_loot = opening and not nearby and capture_radius > 0 and distance(pos, loot_destination) > 22
         chase = finishing and target_distance > (38 if held == "lightning" else 50)
-        kite = (self.hiding and can_sprint and seen_by > 0 and me["energy"] > 20) or sniping and can_sprint and any(distance(pos, e["pos"]) < 95 for e in nearby) and me["energy"] > 25
+        kite = sniping and can_sprint and any(distance(pos, e["pos"]) < 95 for e in nearby) and me["energy"] > 25
         act["boost"] = jet or kite or (can_sprint and (
             (urgent or (bool(nearby) and wounded)) and me["energy"] > 30
             or (rush_loot or chase) and me["energy"] > 66))
@@ -491,52 +468,12 @@ class Bot:
                            and yaw_error < math.radians(secondary["stats"]["cone_deg"])*0.82)
             if not clear and gun["ammo"] < gun["stats"]["mag"] * 0.35:
                 act["reload"] = True
-            if self.hiding and d > 40:
-                # Hold fire while hiding so regeneration can start; keep a laser charge held
-                # (releasing it would fire), the game auto-fires it after 2 s at full charge.
-                fire = [False, bool(held == "laser" and secondary.get("charge", 0) > 0)]
             act["fire"] = fire
         else:
             scan = math.sin(now*2.3) * (0.9 if opening else 0.53)
             yaw = self.damage_bearing if now-self.damage_time < 2.8 else wrap(self.heading + scan)
             act["aim"] = [yaw, 0]
         return act
-
-    def threat_eyes(self, pos, enemies, now):
-        # Only mechs that actually shot us recently count: passive squad members watch
-        # without firing, and hiding from them costs kills.
-        eyes = [(e["pos"][0], e["pos"][1], e["pos"][2] + 8) for e in enemies
-                if distance(pos, e["pos"]) < 170 and now - self.attackers.get(e["id"], -99) < 6][:5]
-        if not eyes and now - self.damage_time < 4 and self.damage_bearing is not None:
-            # Hit by someone we cannot see: assume a shooter 80 m away along the bearing.
-            b = self.damage_bearing
-            eyes = [(pos[0] + 80*math.cos(b), pos[1] + 80*math.sin(b), pos[2] + 8)]
-        return eyes
-
-    def find_hide_spot(self, obs, pos, stats, eyes):
-        """Nearest reachable spot that no known threat can see."""
-        zone = obs["zone"]
-        best, best_score = None, -math.inf
-        for r in (6, 12, 20, 30, 42):
-            for k in range(12):
-                a = k * math.tau / 12 + r * 0.07
-                x, y = pos[0] + r*math.cos(a), pos[1] + r*math.sin(a)
-                g = self.arena.ground(x, y)
-                if abs(g - pos[2]) > 3 or self.arena.obstructed(x, y, pos[2], stats):
-                    continue
-                if self.arena.obstructed((x+pos[0])/2, (y+pos[1])/2, pos[2], stats):
-                    continue
-                if distance((x, y), zone["center"]) > zone["radius"] - 6:
-                    continue
-                c = (x, y, g + 4.5)
-                exposed = sum(1 for eye in eyes if distance(eye, c) < 200 and self.arena.clear_shot(eye, c))
-                far = min((distance(eye, c) for eye in eyes), default=150)
-                score = -10*exposed - 0.06*r + 0.01*min(far, 150)
-                if score > best_score:
-                    best, best_score = (x, y, exposed), score
-            if best is not None and best[2] == 0:
-                break
-        return best
 
     def choose_target(self, obs, pos, stats, enemies, wounded, urgent):
         muzzle = (pos[0], pos[1], pos[2] + stats["muzzle_height"])
