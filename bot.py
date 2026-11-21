@@ -182,8 +182,16 @@ class Bot:
                      and target_distance < 95 and target.get("hp", math.inf) < me["hp"] * 0.43)
         opening = now < 65 and me["cubes"] < 5
         capture_radius = 0
+        laser_run = False
         if urgent:
             goal = center
+            if held != "laser":
+                close = [it for it in loot if it["kind"] == "laser" and distance(pos, it["pos"]) < 35
+                         and distance(it["pos"], zone["center"]) < zone["radius"] - 6
+                         and it["pos"][2] - self.arena.ground(it["pos"][0], it["pos"][1]) < 2.5]
+                if close:
+                    item = min(close, key=lambda it: distance(pos, it["pos"]))
+                    goal, capture_radius, laser_run = item["pos"], 2, True
         else:
             opportunities = []
             def consider(item, value, stop_radius=0):
@@ -207,7 +215,7 @@ class Bot:
                     consider(target, 85, 22)
             for item in loot:
                 if item["kind"] == "laser":
-                    consider(item, 220 if opening else 170, 2)
+                    consider(item, 260 if opening else 200, 2)
                 elif item["kind"] == "lightning":
                     consider(item, 120 if opening else 80, 2)
                 else:
@@ -218,6 +226,8 @@ class Bot:
                 cost, point, stop_radius = min(opportunities, key=lambda item: item[0])
                 if cost < 0:
                     goal, capture_radius = point, stop_radius
+                    laser_run = held != "laser" and any(
+                        it["kind"] == "laser" and distance(it["pos"], point) < 0.5 for it in loot)
 
         wanted = angle(pos, goal)
         best = -math.inf
@@ -235,6 +245,8 @@ class Bot:
                 weight = max(-3.4, min(2.2, (ideal-d)/7))
             elif finishing and enemy["id"] == target["id"]:
                 weight = max(-2.7, (31-d)/10)
+            if laser_run and d > 40:
+                weight *= 0.35  # don't let distant enemies push us off a laser pickup
             pressure.append((angle(pos, enemy["pos"]), weight))
         slope = math.tan(math.radians(stats["max_slope_deg"]))
         for index in range(16):
