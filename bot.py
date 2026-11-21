@@ -21,6 +21,13 @@ def wrap(a):
     return math.atan2(math.sin(a), math.cos(a))
 
 
+def target_size(config, target):
+    kind = target.get("kind", "crate")
+    body = config[{"crate": "crates", "npc": "npc", "mech": "mech"}[kind]]
+    scale = 1 + config["cubes"]["size_per_cube"] * target.get("cubes", 0)
+    return body["radius"] * scale, body["height"] * scale
+
+
 class Arena:
     """Coarse ground and solid spans for scoring short movement choices."""
     cell = 4
@@ -69,6 +76,17 @@ class Arena:
         return any(top > feet + stats["step_up"] and base < feet + stats["height"]
                    for base, top in spans)
 
+    def clear_shot(self, origin, target):
+        dx, dy, dz = (target[i] - origin[i] for i in range(3))
+        steps = min(64, max(1, math.ceil(math.hypot(dx, dy) / self.cell)))
+        for i in range(1, steps):
+            t = i / steps
+            x, y, z = origin[0] + t*dx, origin[1] + t*dy, origin[2] + t*dz
+            spans = self.solids.get((math.floor(x/self.cell), math.floor(y/self.cell)), ())
+            if any(base + 0.4 < z < top - 0.4 for base, top in spans):
+                return False
+        return True
+
 
 class Bot:
     name = "Pocket Comet"
@@ -80,27 +98,55 @@ class Bot:
         self.heading = self.phase
         self.anchor = None
         self.anchor_time = self.jet_until = 0
+        self.target_id = None
+        self.damage_bearing = None
+        self.damage_time = -math.inf
+
+    def incoming_shots(self, obs, pos, stats):
+        threats = []
+        for shot in obs["projectiles"]:
+            if shot["kind"] == "mortar":
+                continue
+            x, y, z = shot["pos"]
+            vx, vy, vz = shot["vel"]
+            speed_sq = vx*vx + vy*vy
+            if speed_sq < 1:
+                continue
+            eta = ((pos[0]-x)*vx + (pos[1]-y)*vy) / speed_sq
+            if not 0.025 < eta < 0.55:
+                continue
+            if not pos[2] - 1 < z + eta*vz < pos[2] + stats["height"] + 1:
+                continue
+            miss = ((pos[0]-x)*vy - (pos[1]-y)*vx) / math.sqrt(speed_sq)
+            if abs(miss) < stats["radius"] + 8:
+                threats.append((eta, miss, vy/math.sqrt(speed_sq), -vx/math.sqrt(speed_sq)))
+        return sorted(threats)[:10]
 
     def act(self, obs):
         me, zone, now = obs["self"], obs["zone"], obs["t"]
         pos, stats = me["pos"], me["stats"]
         enemies = sorted((m for m in obs["mechs"] if m["kind"] == "mech"),
                          key=lambda m: distance(pos, m["pos"]))
-        nearby = [m for m in enemies if distance(pos, m["pos"]) < 110]
-        wounded = me["hp"] < 0.72 * me["max_hp"]
+        nearby = [m for m in enemies if distance(pos, m["pos"]) < 105]
+        wounded = me["hp"] < 0.62 * me["max_hp"]
+        for event in obs["events"]:
+            if event["type"] == "damaged" and event.get("bearing") is not None:
+                self.damage_bearing, self.damage_time = event["bearing"], now
         secondary = me["weapons"][1]
         held = secondary["kind"] if secondary else None
-        rank = {None: 0, "gun": 0, "lightning": 1, "laser": 2}
+        rank = {None: 0, "gun": 0, "laser": 1, "lightning": 2}
         loot = [p for p in obs["pickups"] if rank.get(p["kind"], 0) > rank.get(held, 0)]
         act = {"tick": obs["tick"]}
-        reachable = [p for p in loot if math.dist(pos, p["pos"]) < self.cfg["loot"]["pickup_radius"]]
+        reachable = [p for p in loot if distance(pos, p["pos"]) <= self.cfg["loot"]["pickup_radius"]
+                     and abs(pos[2] - p["pos"][2]) <= 4]
         if reachable:
             act["take"] = max(reachable, key=lambda p: rank[p["kind"]])["id"]
             if held:
                 act["drop"] = 1
         if obs["offer"]:
-            order = ["plating", "nanites", "armor", "gun_damage", "laser_damage",
-                     "gun_rate", "servos", "gun_mag", "lightning_range", "jets"]
+            order = ["plating", "lightning_range", "nanites", "armor", "gun_mag",
+                     "gun_damage", "lightning_damage", "reactor", "servos", "gun_rate",
+                     "laser_damage", "laser_charge", "jets"]
             choices = obs["offer"]["choices"]
             act["pick"] = min(range(len(choices)), key=lambda i:
                               order.index(choices[i]["id"]) if choices[i]["id"] in order else len(order))
@@ -115,53 +161,78 @@ class Bot:
         # Patrol a safe interior band, leaving the middle available for rotation.
         a = self.phase + now*0.043
         goal = (center[0]+math.cos(a)*radius*0.52, center[1]+math.sin(a)*radius*0.52)
+        target = self.choose_target(obs, pos, stats, enemies, wounded, urgent)
+        if target:
+            self.target_id = target["id"]
+        target_kind = target.get("kind", "crate") if target else None
+        capture_radius = 0
         if urgent:
             goal = center
         else:
             opportunities = []
-            def consider(item, value):
+            def consider(item, value, stop_radius=0):
                 p = item["pos"]
                 if distance(p, zone["center"]) < zone["radius"] - 5 and abs(p[2]-pos[2]) < 8:
-                    opportunities.append((distance(pos,p)-value, p))
+                    opportunities.append((distance(pos,p)-value, p, stop_radius))
             if not nearby:
                 for drop in obs["drops"]:
                     if drop["lands_in"] < 5 + distance(pos,drop["pos"])/stats["walk_speed"]:
-                        consider(drop, 135 if wounded else 85)
+                        consider(drop, 145 if wounded else 105, drop["radius"] * 0.65)
                 for crate in obs["crates"]:
                     if me["cubes"] < self.cfg["cubes"]["stat_cap"]:
-                        consider(crate, 44)
+                        consider(crate, 48, 8)
+                if target_kind == "npc" and me["cubes"] < self.cfg["cubes"]["stat_cap"]:
+                    consider(target, 85, 22)
             for item in loot:
-                consider(item, 46 if not secondary else 19)
+                consider(item, 85 if item["kind"] == "lightning" else 52, 2)
             for cube in obs["cubes"]:
-                consider(cube, 64 if not nearby else 14)
-            if opportunities and min(opportunities)[0] < 0:
-                goal = min(opportunities)[1]
+                consider(cube, 86 if not nearby else 24, 2)
+            if opportunities:
+                cost, point, stop_radius = min(opportunities, key=lambda item: item[0])
+                if cost < 0:
+                    goal, capture_radius = point, stop_radius
 
         wanted = angle(pos, goal)
         best = -math.inf
         heading = wanted
+        incoming = self.incoming_shots(obs, pos, stats)
+        pressure = []
+        for enemy in nearby:
+            d = distance(pos, enemy["pos"])
+            weight = (1-d/110) * (3.5 if wounded or len(nearby) > 1 else 1.45)
+            # Stay in the outer edge of arc range during favorable duels.
+            if held == "lightning" and len(nearby) == 1 and not wounded:
+                ideal = secondary["stats"]["range"] * 0.74
+                weight = max(-1.8, min(2.2, (ideal-d)/9))
+            pressure.append((angle(pos, enemy["pos"]), weight))
+        slope = math.tan(math.radians(stats["max_slope_deg"]))
         for index in range(16):
             theta = wanted + index*math.tau/16
             dx, dy = math.cos(theta), math.sin(theta)
             score = math.cos(theta-wanted)*(3.8 if urgent else 1.25)
             score += 0.28*math.cos(theta-self.heading)
-            for enemy in nearby:
-                bearing = angle(pos, enemy["pos"])
-                pressure = max(0, 1-distance(pos, enemy["pos"])/115)
-                score -= math.cos(theta-bearing)*pressure*(3.7 if wounded or len(nearby)>1 else 1.8)
-            if nearby:
-                side = 1 if math.sin(self.phase+now*0.85) >= 0 else -1
-                score += side*math.sin(theta-angle(pos,nearby[0]["pos"]))*0.9
+            for bearing, weight in pressure:
+                score -= math.cos(theta-bearing)*weight
+            if pressure:
+                side = 1 if math.sin(self.phase+now*1.6) >= 0 else -1
+                score += side*math.sin(theta-pressure[0][0])*1.2
+            for eta, miss, nx, ny in incoming:
+                # At short horizons inertia dominates; direction matters further out.
+                steer_time = max(0, eta - 0.075)
+                px = me["vel"][0]*(eta-steer_time) + dx*stats["walk_speed"]*steer_time
+                py = me["vel"][1]*(eta-steer_time) + dy*stats["walk_speed"]*steer_time
+                score -= max(0, stats["radius"] + 1.5 - abs(miss + nx*px + ny*py))*0.75
             for step, penalty in ((5, 5), (12, 2.8), (23, 1.4)):
                 x, y = pos[0]+step*dx, pos[1]+step*dy
                 ground = self.arena.ground(x,y)
                 if (self.arena.obstructed(x,y,pos[2],stats) or
-                        ground-pos[2] > step*math.tan(math.radians(stats["max_slope_deg"]))):
+                        ground-pos[2] > step*slope):
                     score -= penalty
             if score > best:
                 best, heading = score, theta
         self.heading = heading
-        stop = distance(pos, goal) < min(2.3, max(0.15, radius*0.2)) and (not nearby or radius < 4)
+        stop_dist = capture_radius or min(2.3, max(0.15, radius*0.2))
+        stop = distance(pos, goal) < stop_dist and (not nearby or radius < 4)
         act["move"] = [0,0] if stop else [math.cos(self.heading), math.sin(self.heading)]
         if self.anchor is None or now-self.anchor_time >= 1.2:
             if self.anchor and distance(pos,self.anchor)<2 and not stop and me["energy"]>28:
@@ -169,41 +240,74 @@ class Bot:
             self.anchor, self.anchor_time = pos, now
         jet = now < self.jet_until and not stop
         act["jump"] = jet and me["grounded"]
-        act["boost"] = jet or (not stop and (urgent or (bool(nearby) and wounded)) and me["energy"]>32)
+        act["boost"] = jet or (not stop and me["grounded"] and
+                             (urgent or (bool(nearby) and wounded)) and me["energy"] > 30)
 
-        target = min(enemies, key=lambda m: distance(pos,m["pos"])+
-                     25*m.get("hp",1)/max(1,m.get("max_hp",1)), default=None)
-        if not target and not wounded and not urgent:
-            farm = [c for c in obs["crates"] if distance(pos,c["pos"])<50]
-            farm += [m for m in obs["mechs"] if m["kind"]=="npc" and distance(pos,m["pos"])<48]
-            target = min(farm, key=lambda m: distance(pos,m["pos"]), default=None)
         gun = me["weapons"][0]
         act["reload"] = not target and gun["ammo"] < 0.78*gun["stats"]["mag"]
         if target:
             p = target["pos"]
             d = distance(pos,p)
             velocity = target.get("vel", (0,0,0))
-            kind = target.get("kind","crate")
-            height = self.cfg[{"crate":"crates","npc":"npc","mech":"mech"}[kind]]["height"]
-            height *= 1+self.cfg["cubes"]["size_per_cube"]*target.get("cubes",0)
-            laser = held == "laser" and secondary["cooldown"] <= 0 and d < secondary["stats"]["range"]
-            lead = 0 if laser else d/gun["stats"]["speed"]
+            width, height = target_size(self.cfg, target)
+            muzzle = (pos[0], pos[1], pos[2] + stats["muzzle_height"])
+            laser = (held == "laser" and secondary["cooldown"] <= 0
+                     and d < secondary["stats"]["range"] and (not wounded or len(nearby) <= 1))
+            lead = 0.035 if laser else d/gun["stats"]["speed"] + 0.035
             x, y = p[0]+velocity[0]*lead-pos[0], p[1]+velocity[1]*lead-pos[1]
             yaw = math.atan2(y,x)
-            pitch = math.atan2(p[2]+height*0.5-pos[2]-stats["muzzle_height"],math.hypot(x,y))
+            aim_z = p[2] + height*0.52 + velocity[2]*lead
+            pitch = math.atan2(aim_z-muzzle[2], math.hypot(x,y))
             act["aim"] = [yaw,max(stats["min_pitch"],min(stats["max_pitch"],pitch))]
-            aligned = abs(wrap(yaw-me["aim"][0])) < 0.11 and abs(pitch-me["aim"][1]) < 0.12
-            engage = not (wounded and kind=="mech" and d>80 and obs["alive"]>2)
-            fire = [aligned and engage and d < gun["stats"]["range"], False]
+            yaw_error = abs(wrap(yaw-me["aim"][0]))
+            pitch_error = abs(pitch-me["aim"][1])
+            aligned = (yaw_error < min(0.22, math.atan2(width, d) + stats["turn_rate"]*0.022)
+                       and pitch_error < min(0.20, math.atan2(height*0.42, d) + stats["pitch_rate"]*0.022))
+            clear = self.arena.clear_shot(muzzle, (pos[0]+x, pos[1]+y, aim_z))
+            engage = not (wounded and target_kind == "mech" and d > 78 and obs["alive"] > 2
+                          and target.get("hp", math.inf) > 150)
+            fire = [clear and aligned and engage and d < gun["stats"]["range"], False]
             if laser and engage:
-                fire[1] = secondary.get("charge",0) < secondary["stats"]["charge"]-0.01 or not aligned
+                fire[1] = clear and (secondary.get("charge",0) < secondary["stats"]["charge"]-0.01 or not aligned)
+                fire[0] = fire[0] and d < 38
             elif held == "lightning":
-                fire[1] = d < secondary["stats"]["range"] and abs(wrap(yaw-me["aim"][0])) < math.radians(secondary["stats"]["cone_deg"])
+                shot_range = math.dist(muzzle, (p[0], p[1], p[2] + height*0.5))
+                fire[1] = (clear and engage and shot_range < secondary["stats"]["range"]
+                           and yaw_error < math.radians(secondary["stats"]["cone_deg"])*0.82)
+            if not clear and gun["ammo"] < gun["stats"]["mag"] * 0.35:
+                act["reload"] = True
             act["fire"] = fire
         else:
-            bearings = [e["bearing"] for e in obs["events"] if e["type"]=="damaged" and e.get("bearing") is not None]
-            act["aim"] = [bearings[-1] if bearings else wrap(self.phase+now*1.4), 0]
+            yaw = self.damage_bearing if now-self.damage_time < 2.8 else self.heading
+            act["aim"] = [yaw, 0]
         return act
+
+    def choose_target(self, obs, pos, stats, enemies, wounded, urgent):
+        muzzle = (pos[0], pos[1], pos[2] + stats["muzzle_height"])
+        visible = []
+        for enemy in enemies[:7]:
+            d = distance(pos, enemy["pos"])
+            _, height = target_size(self.cfg, enemy)
+            p = enemy["pos"]
+            clear = self.arena.clear_shot(muzzle, (p[0], p[1], p[2] + height*0.52))
+            if clear:
+                health = enemy.get("hp", 1400)
+                priority = 0.58*d + 0.072*health - 14*(enemy["id"] == self.target_id)
+                visible.append((priority, enemy))
+        if visible:
+            return min(visible, key=lambda item: item[0])[1]
+        if wounded or urgent or (enemies and distance(pos, enemies[0]["pos"]) < 85):
+            return enemies[0] if enemies else None
+        farm = [m for m in obs["mechs"] if m["kind"] == "npc" and distance(pos, m["pos"]) < 77]
+        farm.extend(c for c in obs["crates"] if distance(pos, c["pos"]) < 62)
+        ordered = sorted(farm, key=lambda item: (distance(pos, item["pos"])
+                         - 17*(item.get("kind") == "npc") - 14*(item["id"] == self.target_id)))
+        for item in ordered[:6]:
+            p = item["pos"]
+            _, height = target_size(self.cfg, item)
+            if self.arena.clear_shot(muzzle, (p[0], p[1], p[2] + height*0.52)):
+                return item
+        return enemies[0] if enemies else None
 
 
 if __name__ == "__main__":
