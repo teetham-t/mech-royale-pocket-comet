@@ -268,7 +268,9 @@ class Bot:
             if held:
                 act["drop"] = 1
         if obs["offer"]:
-            order = ["laser_charge", "laser_damage", "plating", "armor", "nanites", "gun_damage", "gun_rate",
+            # Survival first: house guns barely hit at range, so effective HP decides how many
+            # hunters we outlast (plating +15% HP, armor -8% damage, nanites faster regen).
+            order = ["plating", "armor", "nanites", "laser_charge", "laser_damage", "gun_damage", "gun_rate",
                      "lightning_efficiency", "lightning_range", "gun_mag", "lightning_chain", "gyros",
                      "gun_velocity", "reactor", "servos", "mortar_reload", "mortar_splash", "capacitor",
                      "mortar_velocity", "jets", "sensors", "laser_pierce"]
