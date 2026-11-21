@@ -12,7 +12,7 @@ import time
 import mechfight as mf
 
 # Seeds the patrol/strafe phase only; any value gives the same expected strength.
-PHASE_SALT = 101
+PHASE_SALT = 202
 
 
 def distance(a, b):
