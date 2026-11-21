@@ -150,9 +150,10 @@ class Bot:
             if held:
                 act["drop"] = 1
         if obs["offer"]:
-            order = ["lightning_range", "plating", "gun_mag", "nanites", "armor",
-                     "gun_damage", "gun_rate", "reactor", "lightning_efficiency",
-                     "gun_velocity", "servos", "laser_damage", "laser_charge", "jets"]
+            order = ["plating", "armor", "gun_damage", "gun_rate", "lightning_efficiency", "laser_damage",
+                     "nanites", "lightning_range", "laser_charge", "gun_mag", "lightning_chain", "gyros",
+                     "gun_velocity", "reactor", "servos", "mortar_reload", "mortar_splash", "capacitor",
+                     "mortar_velocity", "jets", "sensors", "laser_pierce"]
             choices = obs["offer"]["choices"]
             act["pick"] = min(range(len(choices)), key=lambda i:
                               order.index(choices[i]["id"]) if choices[i]["id"] in order else len(order))
