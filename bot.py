@@ -178,9 +178,6 @@ class Bot:
         self.damage_time = -math.inf
         self.last_hit_time = -math.inf
         self.attackers = {}  # mech id -> last time it damaged us
-        self.enemy_track = {}   # mech id -> (time sampled, distance then)
-        self.last_seen_pos = {}
-        self.cube_spots = []    # (position, expiry) where we killed a mech
         self.full_since = None
 
         self.grid = WalkGrid(self.arena, self.cfg["mech"])
@@ -252,12 +249,6 @@ class Bot:
         sniping = bool(secondary0) and secondary0["kind"] == "laser"
         nearby = [m for m in enemies if distance(pos, m["pos"]) < (150 if sniping else 105)]
         wounded = me["hp"] < 0.62 * me["max_hp"]
-        for e in enemies:
-            self.last_seen_pos[e["id"]] = (e["pos"][0], e["pos"][1], e["pos"][2])
-            d = distance(pos, e["pos"])
-            prev = self.enemy_track.get(e["id"])
-            if prev is None or now - prev[0] > 2.0:
-                self.enemy_track[e["id"]] = (now, d)
         for event in obs["events"]:
             if event["type"] == "damaged" and event.get("bearing") is not None:
                 self.damage_bearing, self.damage_time = event["bearing"], now
@@ -265,10 +256,6 @@ class Bot:
                     self.attackers[event["by"]] = now
             elif event["type"] == "hit":
                 self.last_hit_time = now
-            elif event["type"] == "kill":
-                spot = self.last_seen_pos.get(event["target"])
-                if spot is not None:
-                    self.cube_spots.append((spot, now + 25))
         secondary = me["weapons"][1]
         held = secondary["kind"] if secondary else None
         rank = {None: 0, "gun": 0, "mortar": 0, "lightning": 1, "laser": 2}
@@ -346,14 +333,8 @@ class Bot:
                     consider(item, 120 if opening else 80, 2)
                 else:
                     consider(item, 83 if opening else 52, 2)
-            clear_80 = not any(distance(pos, e["pos"]) < 80 for e in enemies)
             for cube in obs["cubes"]:
-                consider(cube, 110 if clear_80 else (86 if not nearby else 24), 2)
-            self.cube_spots = [(p, exp) for p, exp in self.cube_spots
-                               if exp > now and distance(pos, p) > 3]
-            if clear_80 and me["cubes"] < 10:
-                for p, exp in self.cube_spots:
-                    consider({"pos": p}, 220, 1)
+                consider(cube, 86 if not nearby else 24, 2)
             if opportunities:
                 cost, point, stop_radius = min(opportunities, key=lambda item: item[0])
                 if cost < 0:
@@ -472,7 +453,12 @@ class Bot:
                     fire[1] = not (clear and full and (tight or overdue))
                 else:
                     fire[1] = clear and yaw_error < 0.35
-                fire[0] = fire[0] and d < 60
+                # The protocol accepts both slot triggers together. Spend a
+                # round if target motion during flight fits its hit cylinder.
+                flight = max(0, d / gun["stats"]["speed"] - lead)
+                lateral = abs(velocity[0]*math.sin(yaw) - velocity[1]*math.cos(yaw))
+                shared_aim = lateral*flight < width and abs(velocity[2])*flight < height*0.45
+                fire[0] = fire[0] and (d < 60 or shared_aim)
             elif held == "lightning":
                 shot_range = math.dist(muzzle, (p[0], p[1], p[2] + height*0.5))
                 fire[1] = (clear and engage and shot_range < secondary["stats"]["range"]
@@ -492,16 +478,10 @@ class Bot:
         # so we do not wake up passive squad members far away.
         now = obs["t"]
         snipe = bool(obs["self"]["weapons"][1]) and obs["self"]["weapons"][1]["kind"] == "laser"
-        def hunting_us(e):
-            d = distance(pos, e["pos"])
-            if d > 210:
-                return False
-            if now - self.attackers.get(e["id"], -99) < 15 or e["id"] == self.target_id:
-                return True
-            prev = self.enemy_track.get(e["id"])
-            return prev is not None and now - prev[0] < 3 and prev[1] - d > 6  # closing in on us
         enemies = [e for e in enemies if distance(pos, e["pos"]) < (150 if snipe else 90)
-                   or hunting_us(e) or e.get("hp", 1400) < 450]
+                   or now - self.attackers.get(e["id"], -99) < 6
+                   or e.get("hp", 1400) < 450
+                   or e["id"] == self.target_id and distance(pos, e["pos"]) < 130]
         # Shoot back at drones that hit us in the last 5 s, unless a mech is within 60 m.
         if not any(distance(pos, e["pos"]) < 60 for e in enemies):
             drones = sorted((m for m in obs["mechs"] if m["kind"] == "npc"
