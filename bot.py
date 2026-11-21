@@ -311,7 +311,7 @@ class Bot:
         # Practice house bots hunt as a squad: only fight mechs that threaten us or are nearly dead,
         # so we do not wake up passive squad members far away.
         now = obs["t"]
-        enemies = [e for e in enemies if distance(pos, e["pos"]) < 90
+        enemies = [e for e in enemies if distance(pos, e["pos"]) < 60
                    or now - self.attackers.get(e["id"], -99) < 6
                    or e.get("hp", 1400) < 450
                    or e["id"] == self.target_id and distance(pos, e["pos"]) < 130]
