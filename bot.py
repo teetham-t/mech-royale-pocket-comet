@@ -1,10 +1,13 @@
 """Mech Royale placement bot. All distances and timers use match units."""
 from array import array
+from collections import deque
+import heapq
 import json
 import math
 from pathlib import Path
 import random
 import sys
+import time
 
 import mechfight as mf
 
@@ -90,6 +93,76 @@ class Arena:
         return True
 
 
+class WalkGrid:
+    def __init__(self, arena, stats):
+        size = self.size = arena.cell
+        b = arena.bounds
+        xs = range(math.floor(b["minX"]/size), math.ceil(b["maxX"]/size))
+        ys = range(math.floor(b["minY"]/size), math.ceil(b["maxY"]/size))
+        heights = {}
+        blocked = set()
+        for i in xs:
+            for j in ys:
+                x, y = self.center((i, j))
+                z = heights[i, j] = arena.ground(x, y)
+                if arena.obstructed(x, y, z, stats):
+                    blocked.update((i+di, j+dj) for di in (-1, 0, 1) for dj in (-1, 0, 1))
+        walkable = heights.keys() - blocked
+        max_rise = size * math.tan(math.radians(stats["max_slope_deg"]))
+        self.edges = {}
+        for i, j in walkable:
+            self.edges[i, j] = [n for n in self.neighbors((i, j))
+                                if n in walkable and abs(heights[n]-heights[i, j]) <= max_rise]
+
+        # Project blocked endpoints (including rooftops) to a nearby approach cell.
+        self.approach = {cell: cell for cell in self.edges}
+        queue = deque(self.edges)
+        while queue:
+            cell = queue.popleft()
+            for n in self.neighbors(cell):
+                if n in heights and n not in self.approach:
+                    self.approach[n] = self.approach[cell]
+                    queue.append(n)
+
+    @staticmethod
+    def neighbors(cell):
+        i, j = cell
+        return ((i-1, j), (i+1, j), (i, j-1), (i, j+1))
+
+    def center(self, cell):
+        return ((cell[0]+0.5)*self.size, (cell[1]+0.5)*self.size)
+
+    def cell(self, pos):
+        return math.floor(pos[0]/self.size), math.floor(pos[1]/self.size)
+
+    def search(self, start, end):
+        # Yield on long detours so one search cannot monopolize a decision tick.
+        frontier = [(0, 0, start)]
+        parent = {start: None}
+        costs = {start: 0}
+        while frontier:
+            for _ in range(32):
+                if not frontier:
+                    break
+                _, neg_cost, cell = heapq.heappop(frontier)
+                if cell == end:
+                    path = deque()
+                    while cell is not None:
+                        path.appendleft(self.center(cell))
+                        cell = parent[cell]
+                    return path
+                if -neg_cost != costs[cell]:
+                    continue
+                cost = 1-neg_cost
+                for n in self.edges[cell]:
+                    if cost < costs.get(n, math.inf):
+                        costs[n], parent[n] = cost, cell
+                        h = abs(n[0]-end[0]) + abs(n[1]-end[1])
+                        heapq.heappush(frontier, (cost+h, -cost, n))
+            yield
+        return deque()
+
+
 class Bot:
     name = "Pocket Comet"
 
@@ -105,10 +178,47 @@ class Bot:
         self.damage_time = -math.inf
         self.last_hit_time = -math.inf
         self.attackers = {}  # mech id -> last time it damaged us
-        self.enemy_track = {}   # mech id -> (time sampled, distance then)
-        self.last_seen_pos = {}
-        self.cube_spots = []    # (position, expiry) where we killed a mech
         self.full_since = None
+
+        self.grid = WalkGrid(self.arena, self.cfg["mech"])
+        self.lasers = {}
+        self.path_key = self.search = None
+        self.path = deque()
+        self.path_time = -math.inf
+
+    def remember_lasers(self, obs, pos, stats):
+        seen = {p["id"]: tuple(p["pos"]) for p in obs["pickups"] if p["kind"] == "laser"}
+        self.lasers.update(seen)
+        zone = obs["zone"]
+        eye = (pos[0], pos[1], pos[2] + stats["eye_height"])
+        for ident, point in list(self.lasers.items()):
+            if distance(point, zone["center"]) > zone["radius"] or (
+                    ident not in seen and math.dist(pos, point) <= 15
+                    and self.arena.clear_shot(eye, point)):
+                del self.lasers[ident]
+
+    def laser_waypoint(self, now, pos, ident):
+        point = self.lasers[ident]
+        cell = self.grid.cell(pos)
+        key = (ident, point, cell)
+        if key != self.path_key and now-self.path_time >= 1:
+            start = self.grid.approach.get(cell)
+            end = self.grid.approach.get(self.grid.cell(point))
+            self.path_key, self.path_time = key, now
+            self.search = self.grid.search(start, end) if start and end else None
+            self.path.clear()
+        if self.path_key[:2] != key[:2]:
+            return point
+        if self.search is not None:
+            deadline = time.perf_counter() + 0.001
+            try:
+                while time.perf_counter() < deadline:
+                    next(self.search)
+            except StopIteration as done:
+                self.path, self.search = done.value, None
+        while self.path and distance(pos, self.path[0]) <= 6:
+            self.path.popleft()
+        return self.path[0] if self.path else point
 
     def incoming_shots(self, obs, pos, stats):
         threats = []
@@ -139,12 +249,6 @@ class Bot:
         sniping = bool(secondary0) and secondary0["kind"] == "laser"
         nearby = [m for m in enemies if distance(pos, m["pos"]) < (150 if sniping else 105)]
         wounded = me["hp"] < 0.62 * me["max_hp"]
-        for e in enemies:
-            self.last_seen_pos[e["id"]] = (e["pos"][0], e["pos"][1], e["pos"][2])
-            d = distance(pos, e["pos"])
-            prev = self.enemy_track.get(e["id"])
-            if prev is None or now - prev[0] > 2.0:
-                self.enemy_track[e["id"]] = (now, d)
         for event in obs["events"]:
             if event["type"] == "damaged" and event.get("bearing") is not None:
                 self.damage_bearing, self.damage_time = event["bearing"], now
@@ -152,10 +256,6 @@ class Bot:
                     self.attackers[event["by"]] = now
             elif event["type"] == "hit":
                 self.last_hit_time = now
-            elif event["type"] == "kill":
-                spot = self.last_seen_pos.get(event["target"])
-                if spot is not None:
-                    self.cube_spots.append((spot, now + 25))
         secondary = me["weapons"][1]
         held = secondary["kind"] if secondary else None
         rank = {None: 0, "gun": 0, "mortar": 0, "lightning": 1, "laser": 2}
@@ -233,20 +333,23 @@ class Bot:
                     consider(item, 120 if opening else 80, 2)
                 else:
                     consider(item, 83 if opening else 52, 2)
-            clear_80 = not any(distance(pos, e["pos"]) < 80 for e in enemies)
             for cube in obs["cubes"]:
-                consider(cube, 110 if clear_80 else (86 if not nearby else 24), 2)
-            self.cube_spots = [(p, exp) for p, exp in self.cube_spots
-                               if exp > now and distance(pos, p) > 3]
-            if clear_80 and me["cubes"] < 10:
-                for p, exp in self.cube_spots:
-                    consider({"pos": p}, 220, 1)
+                consider(cube, 86 if not nearby else 24, 2)
             if opportunities:
                 cost, point, stop_radius = min(opportunities, key=lambda item: item[0])
                 if cost < 0:
                     goal, capture_radius = point, stop_radius
                     laser_run = held != "laser" and any(
                         it["kind"] == "laser" and distance(it["pos"], point) < 0.5 for it in loot)
+
+        self.remember_lasers(obs, pos, stats)
+        loot_destination = goal
+        if not urgent and held != "laser" and self.lasers:
+            ident = min(self.lasers, key=lambda k: distance(pos, self.lasers[k]))
+            if distance(pos, self.lasers[ident]) <= 250:
+                loot_destination = self.lasers[ident]
+                goal = self.laser_waypoint(now, pos, ident)
+                capture_radius, laser_run = 2, True
 
         wanted = angle(pos, goal)
         best = -math.inf
@@ -303,7 +406,7 @@ class Bot:
         jet = now < self.jet_until and not stop
         act["jump"] = jet and me["grounded"]
         can_sprint = not stop and me["grounded"]
-        rush_loot = opening and not nearby and capture_radius > 0 and distance(pos, goal) > 22
+        rush_loot = opening and not nearby and capture_radius > 0 and distance(pos, loot_destination) > 22
         chase = finishing and target_distance > (38 if held == "lightning" else 50)
         kite = sniping and can_sprint and any(distance(pos, e["pos"]) < 95 for e in nearby) and me["energy"] > 25
         act["boost"] = jet or kite or (can_sprint and (
@@ -370,16 +473,10 @@ class Bot:
         # so we do not wake up passive squad members far away.
         now = obs["t"]
         snipe = bool(obs["self"]["weapons"][1]) and obs["self"]["weapons"][1]["kind"] == "laser"
-        def hunting_us(e):
-            d = distance(pos, e["pos"])
-            if d > 210:
-                return False
-            if now - self.attackers.get(e["id"], -99) < 15 or e["id"] == self.target_id:
-                return True
-            prev = self.enemy_track.get(e["id"])
-            return prev is not None and now - prev[0] < 3 and prev[1] - d > 6  # closing in on us
         enemies = [e for e in enemies if distance(pos, e["pos"]) < (150 if snipe else 90)
-                   or hunting_us(e) or e.get("hp", 1400) < 450]
+                   or now - self.attackers.get(e["id"], -99) < 6
+                   or e.get("hp", 1400) < 450
+                   or e["id"] == self.target_id and distance(pos, e["pos"]) < 130]
         # Shoot back at drones that hit us in the last 5 s, unless a mech is within 60 m.
         if not any(distance(pos, e["pos"]) < 60 for e in enemies):
             drones = sorted((m for m in obs["mechs"] if m["kind"] == "npc"
