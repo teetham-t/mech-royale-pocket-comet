@@ -89,7 +89,7 @@ class Arena:
 
 
 class Bot:
-    name = "Pocket Comet"
+    name = "Relay Runner"
 
     def __init__(self, hello):
         self.cfg = hello["config"]
@@ -99,8 +99,32 @@ class Bot:
         self.anchor = None
         self.anchor_time = self.jet_until = 0
         self.target_id = None
+        self.repairing = False
         self.damage_bearing = None
         self.damage_time = -math.inf
+
+    def select_drop(self, obs, enemies):
+        """Arrive near touchdown; a sole occupant can capture with enemies nearby."""
+        me = obs["self"]
+        zone = obs["zone"]
+        choices = []
+        for drop in obs["drops"]:
+            point, ring = drop["pos"], drop["radius"]
+            if distance(point, zone["center"]) >= zone["radius"]:
+                continue
+            dist = distance(me["pos"], point)
+            walk_time = dist / me["stats"]["walk_speed"]
+            if drop["lands_in"] > walk_time * 1.4 + 4:
+                continue
+            rivals = sum(distance(enemy["pos"], point) < ring * 2 for enemy in enemies)
+            if rivals and dist > ring * 2:
+                continue
+            # Captures grant three cubes even at full health; injury increases
+            # the travel time we will trade for a full repair.
+            budget = 15 + 13 * (1 - me["hp"] / me["max_hp"])
+            if walk_time <= budget:
+                choices.append((walk_time + 4*rivals, drop))
+        return min(choices, key=lambda pair: pair[0])[1] if choices else None
 
     def incoming_shots(self, obs, pos, stats):
         threats = []
@@ -132,6 +156,11 @@ class Bot:
         for event in obs["events"]:
             if event["type"] == "damaged" and event.get("bearing") is not None:
                 self.damage_bearing, self.damage_time = event["bearing"], now
+        # Stop farming long enough for regeneration to finish between encounters.
+        if me["hp"] < 0.80 * me["max_hp"]:
+            self.repairing = True
+        elif me["hp"] >= 0.96 * me["max_hp"]:
+            self.repairing = False
         secondary = me["weapons"][1]
         held = secondary["kind"] if secondary else None
         rank = {None: 0, "gun": 0, "laser": 1, "lightning": 2}
@@ -144,8 +173,8 @@ class Bot:
             if held:
                 act["drop"] = 1
         if obs["offer"]:
-            order = ["plating", "lightning_range", "nanites", "armor", "gun_mag",
-                     "gun_damage", "lightning_damage", "reactor", "servos", "gun_rate",
+            order = ["nanites", "plating", "armor", "lightning_range", "gun_mag",
+                     "gun_damage", "lightning_efficiency", "reactor", "servos", "gun_rate",
                      "laser_damage", "laser_charge", "jets"]
             choices = obs["offer"]["choices"]
             act["pick"] = min(range(len(choices)), key=lambda i:
@@ -161,12 +190,17 @@ class Bot:
         # Patrol a safe interior band, leaving the middle available for rotation.
         a = self.phase + now*0.043
         goal = (center[0]+math.cos(a)*radius*0.52, center[1]+math.sin(a)*radius*0.52)
-        target = self.choose_target(obs, pos, stats, enemies, wounded, urgent)
+        drop = self.select_drop(obs, enemies) if me["in_zone"] else None
+        if urgent and drop and distance(drop["pos"], center) >= radius - margin:
+            drop = None
+        target = self.choose_target(obs, pos, stats, enemies, self.repairing, urgent)
         if target:
             self.target_id = target["id"]
         target_kind = target.get("kind", "crate") if target else None
         capture_radius = 0
-        if urgent:
+        if drop:
+            goal = drop["pos"]
+        elif urgent:
             goal = center
         else:
             opportunities = []
@@ -174,10 +208,7 @@ class Bot:
                 p = item["pos"]
                 if distance(p, zone["center"]) < zone["radius"] - 5 and abs(p[2]-pos[2]) < 8:
                     opportunities.append((distance(pos,p)-value, p, stop_radius))
-            if not nearby:
-                for drop in obs["drops"]:
-                    if drop["lands_in"] < 5 + distance(pos,drop["pos"])/stats["walk_speed"]:
-                        consider(drop, 145 if wounded else 105, drop["radius"] * 0.65)
+            if not nearby and not self.repairing:
                 for crate in obs["crates"]:
                     if me["cubes"] < self.cfg["cubes"]["stat_cap"]:
                         consider(crate, 48, 8)
@@ -211,6 +242,14 @@ class Bot:
             dx, dy = math.cos(theta), math.sin(theta)
             score = math.cos(theta-wanted)*(3.8 if urgent else 1.25)
             score += 0.28*math.cos(theta-self.heading)
+            if drop:
+                # Score the next position including inertia. Inside the ring
+                # keep moving while leaving enough room to turn before its edge.
+                preview = (pos[0] + 0.22*me["vel"][0] + 0.5*stats["walk_speed"]*dx,
+                           pos[1] + 0.22*me["vel"][1] + 0.5*stats["walk_speed"]*dy)
+                limit = drop["radius"] * 0.74
+                improvement = max(0, distance(pos,goal)-limit) - max(0, distance(preview,goal)-limit)
+                score += improvement * (1.65 if distance(pos,goal)<2*limit else 0.55)
             for bearing, weight in pressure:
                 score -= math.cos(theta-bearing)*weight
             if pressure:
@@ -233,6 +272,8 @@ class Bot:
         self.heading = heading
         stop_dist = capture_radius or min(2.3, max(0.15, radius*0.2))
         stop = distance(pos, goal) < stop_dist and (not nearby or radius < 4)
+        if drop:
+            stop = not nearby and distance(pos,goal) < drop["radius"]*0.55
         act["move"] = [0,0] if stop else [math.cos(self.heading), math.sin(self.heading)]
         if self.anchor is None or now-self.anchor_time >= 1.2:
             if self.anchor and distance(pos,self.anchor)<2 and not stop and me["energy"]>28:
@@ -241,7 +282,7 @@ class Bot:
         jet = now < self.jet_until and not stop
         act["jump"] = jet and me["grounded"]
         act["boost"] = jet or (not stop and me["grounded"] and
-                             (urgent or (bool(nearby) and wounded)) and me["energy"] > 30)
+                             (urgent or (drop is not None and distance(pos, goal) > 24) or (bool(nearby) and wounded)) and me["energy"] > 30 and (not drop or distance(pos,goal) > 16))
 
         gun = me["weapons"][0]
         act["reload"] = not target and gun["ammo"] < 0.78*gun["stats"]["mag"]
