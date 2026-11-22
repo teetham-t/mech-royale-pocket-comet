@@ -86,6 +86,8 @@ class Bot:
         self.stuck_since = None; self.stuck_n = 0; self.unstuck_until = -1.0; self.unstuck_dir = (1.0, 0.0)
         self.hold = None; self.hold_start = None
         self.kills = 0; self.start_alive = None; self.odd_deaths = 0; self.ffa = False
+        self.roof_plan = None
+        self.roof_retry = {}
         self.last_aim = None
         self.t0 = 0.0
         ms = self.cfg['mech']
@@ -433,6 +435,80 @@ class Bot:
         cur = PREF.get(ws[1]['kind'], 0) if len(ws) > 1 and ws[1] else 0
         return PREF[kind] > cur
 
+    def roof_entry(self, me, p):
+        # Find a clear takeoff column with a clear crossing just above the roof.
+        x, y, z = p
+        mx, my, _ = me['pos']
+        radius = me['stats'].get('radius', 2.5) + 1.0
+        best_cost = 1e9
+        best = None
+        for i in range(12):
+            angle = i * TAU / 12
+            dx, dy = math.cos(angle), math.sin(angle)
+            for r in (7, 12, 17, 22, 27):
+                ax, ay = x + r * dx, y + r * dy
+                ground = self.m.ground(ax, ay)
+                if not 4 < z - ground < 26 or not self.m.walkable_pt(ax, ay):
+                    continue
+                if not self.m.walkable_pt(ax - radius * dx, ay - radius * dy):
+                    continue
+                if not self.m.los((ax, ay, ground + 1), (ax, ay, z + 10)):
+                    continue
+                if not self.m.los((ax, ay, z + 2), (x, y, z + 2)):
+                    continue
+                cost = hyp(ax - mx, ay - my) + 1.8 * r
+                if cost < best_cost:
+                    best_cost, best = cost, (ax, ay)
+                break
+        return best
+
+    def roof_route(self, obs):
+        me = obs['self']
+        x, y, z = me['pos']
+        now = self.now
+        if self.roof_plan:
+            key, entry, p, start, initial_distance = self.roof_plan
+            on_roof = abs(z - p[2]) < 3.5 and hyp(x - p[0], y - p[1]) < 12
+            visible_ids = {it['id'] for it in obs['pickups']}
+            detour = now - start > 3 and hyp(x - entry[0], y - entry[1]) > initial_distance + 6
+            if now - start > 15 or detour or (on_roof and key not in visible_ids):
+                self.roof_retry[key] = now + 30
+                self.roof_plan = None
+        if self.roof_plan is None:
+            if me['energy'] < 65 or not me['grounded']:
+                return None
+            options = []
+            for it, seen in self.picks.values():
+                p = it['pos']
+                if it['kind'] != 'laser' or now - seen > 2:
+                    continue
+                d = hyp(p[0] - x, p[1] - y)
+                height = p[2] - self.m.ground(*p[:2])
+                if d < 110 and abs(height) < 3.2:
+                    return None
+                if (d < 95 and 4 < height < 26 and self.roof_retry.get(it['id'], 0) <= now
+                        and now + 19 < self.zone_deadline(obs['zone'], p[0], p[1], 6)):
+                    options.append((d, it['id'], p))
+            if not options:
+                return None
+            _, key, p = min(options)
+            entry = self.roof_entry(me, p)
+            if entry is None:
+                self.roof_retry[key] = now + 30
+                return None
+            self.roof_plan = (key, entry, p, now, hyp(x - entry[0], y - entry[1]))
+        key, (ax, ay), (px, py, pz), _, _ = self.roof_plan
+        if z < pz - 0.6 and me['grounded'] and hyp(x - ax, y - ay) > 2:
+            return (*self.travel(me, ax, ay), False, False)
+        if z < pz + 0.8 and not (me['grounded'] and z >= pz - 0.6):
+            if me['energy'] < 8:
+                self.roof_retry[key] = now + 30
+                self.roof_plan = None
+                return None
+            return (0.0, 0.0, True, me['grounded'])
+        d = max(1.0, hyp(px - x, py - y))
+        return ((px - x) / d, (py - y) / d, not me['grounded'] and z < pz + 2.5, False)
+
     def choose_loot(self, obs, hp, danger):
         me = obs['self']; x, y = me['pos'][0], me['pos'][1]
         z = obs['zone']; now = self.now
@@ -759,6 +835,12 @@ class Bot:
                 mx, my = self.travel(me, best_pick[0], best_pick[1])
                 boost = energy > 28 and best_cost > .5
                 mode = 'equip'
+        if (wl[1] is None and target is None and not zone_should and not retreat
+                and not danger and now < 100 and mode not in ('equip', 'unstuck')):
+            roof_move = self.roof_route(obs)
+            if roof_move is not None:
+                mx, my, boost, act['jump'] = roof_move
+                mode = 'roof'
         dx, dy, beam = self.dodge(obs)
         if (dx or dy) and mode != 'unstuck':
             mx, my = mx * 0.4 + dx * 0.9, my * 0.4 + dy * 0.9
@@ -920,7 +1002,7 @@ class Bot:
         if not (math.isfinite(mx) and math.isfinite(my)):
             mx = my = 0.0
         act['move'] = [mx, my]
-        act['boost'] = bool(boost and (mx or my))
+        act['boost'] = bool(boost and (mx or my or mode == 'roof'))
         act['fire'] = fire[:2]
         self.mode = mode
         return act
