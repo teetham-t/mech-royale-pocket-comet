@@ -515,9 +515,31 @@ class Bot:
         me = obs['self']; st = me['stats']
         cx, cy = me['pos'][0], me['pos'][1]; cz = me['pos'][2] + st.get('height', 9) * 0.56
         reach = st.get('radius', 2.5) + 1.1
-        dx = dy = 0.0; laser = False
+        dx = dy = 0.0; urgent = False
         for p in obs['projectiles']:
             if p['kind'] == 'mortar':
+                # Test the shell's upcoming path against our moving body and feet.
+                px, py, pz = p['pos']
+                vx, vy, vz = p['vel']
+                mvx, mvy, _ = me['vel']
+                ux, uy = vx - mvx, vy - mvy
+                speed2 = ux * ux + uy * uy
+                if speed2 < 1 or not me['grounded']:
+                    continue
+                t = ((cx - px) * ux + (cy - py) * uy) / speed2
+                if not 0.10 < t < 0.85:
+                    continue
+                mortar = self.cfg['weapons']['mortar']
+                height = pz + vz * t - 0.5 * mortar['gravity'] * t * t - me['pos'][2]
+                lateral = ((cx - px) * uy - (cy - py) * ux) / math.sqrt(speed2)
+                if -2 < height < st.get('height', 9) + 1 and abs(lateral) < reach + mortar['splash_radius'] * 0.65:
+                    # Continue outward on the same side of the predicted path.
+                    side = 1 if lateral > 0 else -1
+                    if abs(lateral) < 0.4:
+                        side = 1 if mvx * uy - mvy * ux > 0 else -1
+                    dx += side * uy / math.sqrt(speed2)
+                    dy -= side * ux / math.sqrt(speed2)
+                    urgent = True
                 continue
             vx, vy, vz = p['vel']
             v2 = vx * vx + vy * vy + vz * vz
@@ -544,10 +566,10 @@ class Bot:
                 continue
             dx += math.cos(to_me + math.pi / 2 * self.strafe) * 1.5
             dy += math.sin(to_me + math.pi / 2 * self.strafe) * 1.5
-            laser = True
+            urgent = True
         L = hyp(dx, dy)
         if L > 0.01:
-            return dx / L, dy / L, laser
+            return dx / L, dy / L, urgent
         return 0.0, 0.0, False
 
     # ------------------------------------------------------------ aiming

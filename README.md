@@ -21,6 +21,7 @@ default); the scorer sets none, so the defaults are what plays.
   "losing fight" retreat rule, peek-style step search, upgrade order) were learned by reading the
   public MIT-licensed bot by giddygiddyboy (github.com/justnau/giddygiddyboy-mech-royale) and other
   teams' public write-ups; no code was copied.
+- The BuildersHackathonMechRoyale example inspired checking visible mortar trajectories during movement. Our relative-motion dodge is independently implemented.
 - Earlier versions and research (pocket-comet): team member teetham-t.
 - `mechfight.py` and the starting `bot.py` structure come from the event's official `mechfight-kit`.
 - No third-party libraries at runtime: Python 3.13 standard library only. The map file was
