@@ -623,7 +623,8 @@ class Bot:
             else:
                 f.engage = (f.dist < 38 or active or late or (ohp < 0.4 * omax and f.dist < 160)
                             or (o['id'] == self.stick_id and now - self.stick_t < 5)
-                            or (las is not None and hp > .83 and f.dist < 170 and now - self.hurt_t > 9))
+                            or (las is not None and hp > .83 and f.dist < 170 and now - self.hurt_t > 9
+                                and (f.dist < 70 or approach > max(3.0, 0.6 * hyp(v[0], v[1])))))
             if not f.engage or not f.los or f.dist > REACH:
                 continue
             s = f.dist + HPW * ohp
