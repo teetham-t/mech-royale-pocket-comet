@@ -36,7 +36,7 @@ REACH = K('V8_REACH', 240)       # max target distance
 LASER_R = K('V8_LASER_R', 120)   # preferred fight range while holding a laser
 GUN_R = K('V8_GUN_R', 85)
 ZAP_R = K('V8_ZAP_R', 28)
-FIN_R = K('V8_FIN_R', 20)        # range we close to when finishing a wounded target
+FIN_R = K('V8_FIN_R', 55)        # range we close to when finishing a wounded target (house guns hit ~85% inside 40 m)
 SEEK = K('V8_SEEK', 240)         # how far we walk for a laser
 LOOT_R = K('V8_LOOT_R', 150)
 FARM_HP = K('V8_FARM_HP', 0.5)
@@ -331,7 +331,11 @@ class Bot:
                 dx = dy = 0.0; cx, cy = x, y; r = 0.0
             cz = self.m.ground(cx, cy)
             d = hyp(o['pos'][0] - cx, o['pos'][1] - cy)
-            s = -1.1 * abs(d - rp) - 0.4 * r
+            gap = d - rp
+            if gap > 0 and o.get('kind') == 'mech':
+                s = -0.3 * gap - 0.4 * r      # stand off: barely pull toward a mech that is beyond our range
+            else:
+                s = -1.1 * abs(gap) - 0.4 * r
             los = self.m.los((cx, cy, cz + mh), tc)
             if los:
                 s += 45 * want_los
