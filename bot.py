@@ -41,6 +41,8 @@ SEEK = K('V8_SEEK', 240)         # how far we walk for a laser
 LOOT_R = K('V8_LOOT_R', 150)
 FARM_HP = K('V8_FARM_HP', 0.5)
 CUBE_GRAB = K('V8_CUBE_GRAB', 70)
+REST_LO = K('V8_REST_LO', 0.60)  # start resting below this HP fraction when nobody is attacking us
+REST_HI = K('V8_REST_HI', 0.90)  # rest until HP regenerates back to this fraction
 
 
 def wrap(a):
@@ -86,6 +88,7 @@ class Bot:
         self.stuck_since = None; self.stuck_n = 0; self.unstuck_until = -1.0; self.unstuck_dir = (1.0, 0.0)
         self.hold = None; self.hold_start = None
         self.kills = 0; self.start_alive = None; self.odd_deaths = 0; self.ffa = False
+        self.resting = False
         self.last_aim = None
         self.t0 = 0.0
         ms = self.cfg['mech']
@@ -580,6 +583,14 @@ class Bot:
         las = ws.get('laser', (None, None))[1]
         wk = {k: v[1] for k, v in ws.items()}
         late = z['next_radius'] <= 70 or obs['alive'] <= 3
+        # Rest between fights: HP regenerates 45/s after 5 s without damage, so below REST_LO with
+        # nobody shooting us we stop starting fights and farming until HP is back to REST_HI.
+        if self.resting:
+            if hp >= REST_HI or late or self.ffa:
+                self.resting = False
+        elif hp < REST_LO and now - self.hurt_t > 3 and not late and not self.ffa:
+            self.resting = True
+        resting = self.resting
 
         # ---------------- who to fight
         seen = []; target = None; bscore = 1e18
@@ -606,6 +617,8 @@ class Bot:
                 f.engage = (f.dist < 38 or active or late or (ohp < 0.4 * omax and f.dist < 160)
                             or (o['id'] == self.stick_id and now - self.stick_t < 5)
                             or (las is not None and hp > .83 and f.dist < 170 and now - self.hurt_t > 9))
+                if resting and not (f.dist < 38 or active):
+                    f.engage = False
             if not f.engage or not f.los or f.dist > REACH:
                 continue
             s = f.dist + HPW * ohp
@@ -708,6 +721,16 @@ class Bot:
                 mx, my = self.travel(me, bc[0], bc[1]); mode = 'fight:cube'
         elif zone_should and zdist > 2:
             mx, my = self.travel(me, zgx, zgy); mode = 'zone'
+        elif resting:
+            mode = 'rest'
+            near_foes = [f for f in seen if f.dist < 230]
+            mv = self.cover_move(obs, near_foes) if near_foes else None
+            if mv is not None:
+                mx, my = mv
+            else:
+                for it, _ in self.cubes.values():      # a cube right next to us is still worth a step
+                    if hyp(it['pos'][0] - x, it['pos'][1] - y) < 25:
+                        mx, my = self.travel(me, it['pos'][0], it['pos'][1]); break
         else:
             lc = self.choose_loot(obs, hp, danger)
             if lc is not None:
