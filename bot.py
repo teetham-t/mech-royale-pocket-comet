@@ -86,6 +86,7 @@ class Bot:
         self.stuck_since = None; self.stuck_n = 0; self.unstuck_until = -1.0; self.unstuck_dir = (1.0, 0.0)
         self.hold = None; self.hold_start = None
         self.kills = 0; self.start_alive = None; self.odd_deaths = 0; self.ffa = False
+        self.seek_ban = {}
         self.last_aim = None
         self.t0 = 0.0
         ms = self.cfg['mech']
@@ -492,6 +493,28 @@ class Bot:
             return None
         return best
 
+    # ------------------------------------------------------------ seeking
+    def seek_spot(self, obs, hp, late):
+        """Healthy and with nothing to do: the freshest place a mech was seen (<= 20 s ago, <= 320 m, inside the zone)."""
+        if hp <= 0.7 or late:
+            return None
+        me = obs['self']; x, y = me['pos'][0], me['pos'][1]
+        cx0, cy0, cr0 = self.zone_now(obs['zone'])
+        best = None
+        for k, f in self.foes.items():
+            if self.now - f.seen > 20 or self.seek_ban.get(k, -1) > self.now:
+                continue
+            p = f.o['pos']
+            d = hyp(p[0] - x, p[1] - y)
+            if d < 15:                      # got there and nobody to fight: look elsewhere for a while
+                self.seek_ban[k] = self.now + 30
+                continue
+            if d > 320 or hyp(p[0] - cx0, p[1] - cy0) > cr0 - 10:
+                continue
+            if best is None or f.seen > best[0]:
+                best = (f.seen, p)
+        return best[1] if best else None
+
     # ------------------------------------------------------------ dodging
     def dodge(self, obs):
         me = obs['self']; st = me['stats']
@@ -733,6 +756,9 @@ class Bot:
                         mx, my = self.travel(me, p[0], p[1])
                 else:
                     mx, my = self.travel(me, p[0], p[1])
+            elif self.seek_spot(obs, hp, late) is not None:
+                p = self.seek_spot(obs, hp, late)
+                mx, my = self.travel(me, p[0], p[1]); mode = 'seek'
             elif 'patrol' in F and z['next_radius'] > 30:
                 nc = z['next_center']; a = self.phase + now * 0.043
                 px_, py_ = nc[0] + math.cos(a) * z['next_radius'] * 0.6, nc[1] + math.sin(a) * z['next_radius'] * 0.6
