@@ -596,13 +596,16 @@ class Bot:
             off = abs(wrap(o['aim'][0] - to_me))
             aimed = off < 0.22
             ohp = o.get('hp', 1400); omax = o.get('max_hp', 1400) or 1400
+            v = o.get('vel', (0, 0, 0))
+            approach = v[0] * math.cos(to_me) + v[1] * math.sin(to_me)
+            active = now - f.hit_me < 7 or (aimed and (approach > 2 or o.get('charging')))
             if self.ffa:
                 f.engage = (f.dist < 60 or now - f.hit_me < 4 or (aimed and o.get('charging') and f.dist < 120)
                             or (ohp < 350 and f.dist < 120) or obs['alive'] <= 2)
             else:
-                f.engage = (f.dist < 60 or now - f.hit_me < 6 or late or (f.closing > 3 and f.dist < 180)
-                            or (ohp < 0.4 * omax and f.dist < 160) or (aimed and f.dist < 190)
-                            or ('wide' in F and f.dist < (220 if las is not None else 180)))
+                f.engage = (f.dist < 38 or active or late or (ohp < 0.4 * omax and f.dist < 160)
+                            or (o['id'] == self.stick_id and now - self.stick_t < 5)
+                            or (las is not None and hp > .83 and f.dist < 170 and now - self.hurt_t > 9))
             if not f.engage or not f.los or f.dist > REACH:
                 continue
             s = f.dist + HPW * ohp
@@ -610,8 +613,10 @@ class Bot:
                 s -= LOWB
             if o['id'] == self.stick_id and now - self.stick_t < 2:
                 s -= STICK
+            if active:
+                s -= 160
             if now - f.hit_me < 4:
-                s -= 40
+                s -= 90
             if f.closing > 3:
                 s -= 15
             if s < bscore:
@@ -699,7 +704,7 @@ class Bot:
                 d = hyp(it['pos'][0] - x, it['pos'][1] - y)
                 if d < r:
                     r, bc = d, it['pos']
-            if bc is not None:
+            if bc is not None and not (me['cubes'] >= self.cube_cap or (crowd > 1 and r > 12)):
                 mx, my = self.travel(me, bc[0], bc[1]); mode = 'fight:cube'
         elif zone_should and zdist > 2:
             mx, my = self.travel(me, zgx, zgy); mode = 'zone'
@@ -735,6 +740,25 @@ class Bot:
             elif zdist > 3:
                 mx, my = self.travel(me, zgx, zgy); mode = 'zone-walk'
 
+        if not zone_must and not retreat and wl[1] is None and now < 100:
+            best_pick = None
+            best_cost = 10.0 if target is None else 4.0
+            for pick, last in self.picks.values():
+                if pick['kind'] not in PREF or now - last > 15:
+                    continue
+                p = pick['pos']
+                distance = hyp(p[0] - x, p[1] - y)
+                if distance > 130 or abs(p[2] - self.m.ground(p[0], p[1])) > 3.2:
+                    continue
+                if now + distance / walk + 6 > self.zone_deadline(z, p[0], p[1], 6):
+                    continue
+                cost = distance / walk + (0 if pick['kind'] == 'laser' else 1.7)
+                if cost < best_cost:
+                    best_cost, best_pick = cost, p
+            if best_pick is not None:
+                mx, my = self.travel(me, best_pick[0], best_pick[1])
+                boost = energy > 28 and best_cost > .5
+                mode = 'equip'
         dx, dy, beam = self.dodge(obs)
         if (dx or dy) and mode != 'unstuck':
             mx, my = mx * 0.4 + dx * 0.9, my * 0.4 + dy * 0.9
@@ -863,6 +887,8 @@ class Bot:
                 aim[0] = self.drone_bearing
             elif now - self.hurt_t < 2.5:
                 aim[0] = self.hurt_bearing
+            elif now < 8 and wl[1] is None:
+                aim[0] = me['aim'][0] + .65
             elif mx or my:
                 aim[0] = math.atan2(my, mx) + 1.15 * math.sin(now * 1.3)
             else:
