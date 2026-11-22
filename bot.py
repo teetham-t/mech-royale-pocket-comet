@@ -698,14 +698,17 @@ class Bot:
             if zap is not None and target.dist > 50 and energy > 55:
                 boost = True
             mode = 'fight'
-            r = CUBE_GRAB * (0.57 if hp <= 0.5 else 1.0)
+            # Cube vacuum: kill cubes add HP, damage and upgrades; take every one within 90 m at once,
+            # boosting, even under fire (aim and fire are unchanged, so we keep shooting on the way).
+            r = 90.0
             bc = None
             for it, _ in self.cubes.values():
                 d = hyp(it['pos'][0] - x, it['pos'][1] - y)
-                if d < r:
+                if d < r and abs(it['pos'][2] - zf) < 4:
                     r, bc = d, it['pos']
-            if bc is not None and not (me['cubes'] >= self.cube_cap or (crowd > 1 and r > 12)):
+            if bc is not None:
                 mx, my = self.travel(me, bc[0], bc[1]); mode = 'fight:cube'
+                boost = energy > 20 and r > 6
         elif zone_should and zdist > 2:
             mx, my = self.travel(me, zgx, zgy); mode = 'zone'
         else:
