@@ -906,6 +906,10 @@ class Bot:
                 aim[0] = self.drone_bearing
             elif now - self.hurt_t < 2.5:
                 aim[0] = self.hurt_bearing
+            elif (wl[1] is None and now < 75 and not danger and mode != 'equip'
+                  and now - self.threat_t > 4 and (now + self.phase) % 5 < 1.9):
+                # Recheck the full horizon while moving between loot opportunities.
+                aim[0] = me['aim'][0] + 0.65
             elif now < 8 and wl[1] is None:
                 aim[0] = me['aim'][0] + .65
             elif mx or my:
