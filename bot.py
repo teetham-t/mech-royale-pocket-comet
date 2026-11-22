@@ -626,7 +626,21 @@ class Bot:
                             or (las is not None and hp > .83 and f.dist < 170 and now - self.hurt_t > 9))
             if not f.engage or not f.los or f.dist > REACH:
                 continue
-            s = f.dist + HPW * ohp
+            effective_hp = ohp
+            if las is not None and f.dist < las['stats']['range'] * 0.97:
+                beam = las['stats']['damage']
+                cycle = las['stats']['charge'] + las['stats']['cooldown']
+                gun_damage = 0.0
+                if gun is not None and f.dist < gun['stats']['range'] * 0.96:
+                    fire_time = max(0.0, cycle - gun.get('reload', 0))
+                    shots = min(gun.get('ammo', 0), fire_time / gun['stats']['cooldown'])
+                    gun_damage = shots * gun['stats']['damage']
+                bonus = las['stats'].get('cookoff', 0.6) if 'mortar' in (o.get('weapons') or []) else 0.0
+                effective_hp *= (gun_damage + beam) / (gun_damage + beam * (1 + bonus))
+                damage_scale = 1 + self.dpc * min(me['cubes'], self.cube_cap)
+                if las.get('cooldown', 0) <= 0.1 and ohp <= 0.7 * beam * (1 + bonus) * damage_scale:
+                    effective_hp *= 0.45
+            s = f.dist + HPW * effective_hp
             if ohp <= 0.3 * omax:
                 s -= LOWB
             if o['id'] == self.stick_id and now - self.stick_t < 2:
