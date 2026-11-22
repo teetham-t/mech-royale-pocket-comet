@@ -433,6 +433,23 @@ class Bot:
         cur = PREF.get(ws[1]['kind'], 0) if len(ws) > 1 and ws[1] else 0
         return PREF[kind] > cur
 
+    def pickup_race_delay(self, item, distance, walk):
+        if distance < 2 * self.pick_r:
+            return 0.0
+        px, py, pz = item['pos']
+        for foe in self.foes.values():
+            if foe.seen != self.now or item['kind'] in (foe.o.get('weapons') or []):
+                continue
+            fx, fy, fz = foe.o['pos']
+            dx, dy = px - fx, py - fy
+            gap = hyp(dx, dy)
+            if gap > 65 or distance - gap < 2.5 * walk or abs(fz - pz) > 4:
+                continue
+            vx, vy = foe.o['vel'][:2]
+            if vx * dx + vy * dy > 0.7 * gap * max(6, hyp(vx, vy)):
+                return 8.0
+        return 0.0
+
     def choose_loot(self, obs, hp, danger):
         me = obs['self']; x, y = me['pos'][0], me['pos'][1]
         z = obs['zone']; now = self.now
@@ -475,7 +492,8 @@ class Bot:
                 continue
             if kind != 'npc' and p[2] - self.m.ground(p[0], p[1]) > 3.2:
                 continue
-            u = v / (d + 18)
+            race_delay = self.pickup_race_delay(it, d, walk) if kind == 'pickup' else 0.0
+            u = v / (d + 18 + walk * race_delay)
             if iid == self.loot_id:
                 u *= 1.35
             if u > bu:
@@ -753,6 +771,7 @@ class Bot:
                 if now + distance / walk + 6 > self.zone_deadline(z, p[0], p[1], 6):
                     continue
                 cost = distance / walk + (0 if pick['kind'] == 'laser' else 1.7)
+                cost += self.pickup_race_delay(pick, distance, walk)
                 if cost < best_cost:
                     best_cost, best_pick = cost, p
             if best_pick is not None:
