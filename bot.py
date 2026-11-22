@@ -337,8 +337,15 @@ class Bot:
                 self.camp = self.pick_camp(obs, me, self.enemy_seen); self.camp_key = zk; self.camp_t = t
         goal = self.camp
         if 'patrol' in F:
-            a_ = self.phase + t * PSPD
-            goal = (nc[0] + math.cos(a_) * nr * PFRAC, nc[1] + math.sin(a_) * nr * PFRAC)
+            # Enter the next circle on our side, then follow its perimeter.
+            # A time-driven angle can send a newly spawned mech across the
+            # centre even though the near side is already inside the zone.
+            radius = nr * PFRAC
+            radial = ang(nc, pos) if d2(pos, nc) > 1 else self.phase
+            direction = 1 if self.phase >= 0 else -1
+            lead = min(0.9, 3 * st['walk_speed'] / max(radius, 1))
+            a_ = radial + direction * lead
+            goal = (nc[0] + math.cos(a_) * radius, nc[1] + math.sin(a_) * radius)
         stop_r = min(3.0, max(0.5, nr * 0.2))
         if urgent:
             goal = self.camp if d2(self.camp, nc) < nr else nc
