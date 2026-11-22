@@ -41,6 +41,8 @@ SEEK = K('V8_SEEK', 240)         # how far we walk for a laser
 LOOT_R = K('V8_LOOT_R', 150)
 FARM_HP = K('V8_FARM_HP', 0.5)
 CUBE_GRAB = K('V8_CUBE_GRAB', 70)
+HUNT_HP = K('V8_HUNT_HP', 0.75)   # above this HP fraction we take on any mech in sight...
+HUNT_R = K('V8_HUNT_R', 150)      # ...within this distance (score is close to kills)
 
 
 def wrap(a):
@@ -605,7 +607,8 @@ class Bot:
             else:
                 f.engage = (f.dist < 38 or active or late or (ohp < 0.4 * omax and f.dist < 160)
                             or (o['id'] == self.stick_id and now - self.stick_t < 5)
-                            or (las is not None and hp > .83 and f.dist < 170 and now - self.hurt_t > 9))
+                            or (las is not None and hp > .83 and f.dist < 170 and now - self.hurt_t > 9)
+                            or (hp > HUNT_HP and f.dist < HUNT_R))
             if not f.engage or not f.los or f.dist > REACH:
                 continue
             s = f.dist + HPW * ohp
