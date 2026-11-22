@@ -271,14 +271,24 @@ class Bot:
             if kind == 'mortar' and 'nomortar' in F:
                 return False
             return free_slot or RANK[kind] > held_best
-        loot = [p for p in obs['pickups'] if want(p['kind']) and t - self.failed.get(p['id'], -99) > 2]
+        # Keep both specialist slots when the complementary pickup is nearby.
+        # The gun is the fallback until that pair can actually be equipped.
+        complement = None
+        if gun_i is not None:
+            if sniping:
+                complement = 'lightning'
+            elif lig_i is not None:
+                complement = 'laser'
+        loot = [p for p in obs['pickups'] if (want(p['kind']) or (p['kind'] == complement and d2(pos, p['pos']) < 25)) and t - self.failed.get(p['id'], -99) > 2]
         reach = [p for p in loot if d2(pos, p['pos']) <= self.cfg['loot']['pickup_radius'] - 0.2 and abs(pz - p['pos'][2]) <= 3.9]
         if reach:
             p = max(reach, key=lambda p: RANK[p['kind']])
             act['take'] = p['id']
             if not free_slot:
-                # replace the worst non-gun weapon
+                # A complementary pickup replaces the gun; other upgrades replace a specialist.
                 worst = min((i for i, w in enumerate(ws) if w and w['kind'] != 'gun'), key=lambda i: RANK[ws[i]['kind']], default=None)
+                if p['kind'] == complement:
+                    worst = gun_i
                 if worst is not None and not (ws[worst]['kind'] == 'laser' and ws[worst].get('charge', 0) > 0):
                     act['drop'] = worst
                 else:
@@ -495,7 +505,7 @@ class Bot:
             p = target['pos']; d = d2(pos, p)
             vel = target.get('vel', (0, 0, 0))
             wdt, hgt = self.size(target)
-            laser_ok = sniping and ws[laser_i]['cooldown'] <= 0 and d < ws[laser_i]['stats'].get('range', 280) and (not wounded or len(nearby) <= 1) and tkind != 'crate'
+            laser_ok = sniping and ws[laser_i]['cooldown'] <= 0 and d < ws[laser_i]['stats'].get('range', 280) and (not wounded or len(nearby) <= 1) and (tkind != 'crate' or gun is None)
             charging = sniping and ws[laser_i].get('charge', 0) > 0
             gspeed = gun['stats'].get('speed', 252) if gun else 252
             lead = 0.1 if (laser_ok or charging) else d / gspeed + 0.035
