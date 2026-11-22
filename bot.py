@@ -511,6 +511,28 @@ class Bot:
         return best
 
     # ------------------------------------------------------------ dodging
+    def escape_move(self, obs, zappers, reach):
+        """Step away from enemies holding lightning: pick the walkable 8 m step that best opens distance."""
+        me = obs['self']; x, y = me['pos'][0], me['pos'][1]
+        fx = fy = 0.0
+        for f in zappers:
+            d = max(f.dist, 1.0)
+            w = 1.2 - min(d, reach) / reach
+            fx += (x - f.o['pos'][0]) / d * w
+            fy += (y - f.o['pos'][1]) / d * w
+        z = obs['zone']
+        best = -1e18; mx = my = 0.0
+        for k in range(16):
+            a = k * TAU / 16
+            dx, dy = math.cos(a), math.sin(a)
+            cx, cy = x + dx * 8, y + dy * 8
+            if not self.m.walk_line((x, y), (cx, cy)):
+                continue
+            s = dx * fx + dy * fy - 0.02 * self.zone_cost(z, cx, cy)
+            if s > best:
+                best, mx, my = s, dx, dy
+        return mx, my
+
     def dodge(self, obs):
         me = obs['self']; st = me['stats']
         cx, cy = me['pos'][0], me['pos'][1]; cz = me['pos'][2] + st.get('height', 9) * 0.56
@@ -675,6 +697,14 @@ class Bot:
         zone_should = now + t_need + 14 >= deadline
         energy = me['energy']
 
+        # Lightning (45 m, ~240 dps) shreds us at close range; if we do not hold one, keep out of its reach.
+        zap_reach = self.cfg.get('weapons', {}).get('lightning', {}).get('range', 45) + 12
+        zappers = [] if zap is not None else [
+            f for f in seen if f.seen == now and f.dist < zap_reach and 'lightning' in (f.o.get('weapons') or [])]
+        if zappers and target is not None and target in zappers and hp > 0.5 \
+                and thp < 0.3 * target.o.get('max_hp', 1400):
+            zappers = []          # nearly dead: finish it instead of running
+
         if now < self.unstuck_until:
             mx, my = self.unstuck_dir; mode = 'unstuck'
             if me['grounded']:
@@ -684,6 +714,10 @@ class Bot:
             mx, my = self.travel(me, zgx, zgy)
             boost = ((not me['in_zone']) or now + t_need >= deadline) and energy > 5
             mode = 'zone'
+        elif zappers:
+            mx, my = self.escape_move(obs, zappers, zap_reach)
+            boost = energy > 10 and (mx or my)
+            mode = 'escape'
         elif retreat and not finishing and not late:
             mv = self.cover_move(obs, seen)
             if mv is not None:
@@ -758,7 +792,7 @@ class Bot:
             elif zdist > 3:
                 mx, my = self.travel(me, zgx, zgy); mode = 'zone-walk'
 
-        if not zone_must and not retreat and wl[1] is None and now < 100:
+        if not zone_must and not retreat and mode != 'escape' and wl[1] is None and now < 100:
             best_pick = None
             best_cost = 10.0 if target is None else 4.0
             for pick, last in self.picks.values():
@@ -900,7 +934,10 @@ class Bot:
             for f in seen:
                 if (f.engage or now - f.hit_me < 6) and (watch is None or f.dist < watch.dist):
                     watch = f
-            if watch is not None:
+            if zappers:           # back away facing it: hits from behind take x1.5 damage
+                zf_ = min(zappers, key=lambda f: f.dist)
+                aim[0] = math.atan2(zf_.o['pos'][1] - y, zf_.o['pos'][0] - x)
+            elif watch is not None:
                 aim[0] = math.atan2(watch.o['pos'][1] - y, watch.o['pos'][0] - x)
             elif now - self.drone_hurt_t < 2.5:
                 aim[0] = self.drone_bearing
