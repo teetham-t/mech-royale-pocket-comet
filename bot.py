@@ -23,7 +23,7 @@ UPGRADES = ['plating', 'armor', 'laser_damage', 'laser_charge', 'nanites', 'gun_
             'lightning_efficiency', 'lightning_range', 'servos', 'gun_mag', 'gun_velocity', 'gyros',
             'lightning_chain', 'reactor', 'capacitor', 'mortar_reload', 'mortar_splash', 'mortar_velocity',
             'sensors', 'jets', 'laser_pierce']
-PREF = {'laser': 4, 'lightning': 3}          # we never take mortars
+PREF = {'lightning': 4, 'laser': 3}          # lightning first (240 dps + chain vs a squad that closes in); never mortars
 
 # tuning knobs (env overrides make simulator sweeps easy)
 def K(name, default):
@@ -445,10 +445,10 @@ class Bot:
         for it, _ in self.picks.values():
             if now - self.failed.get(it['id'], -99) < 3 or not self.want(me, it['kind']):
                 continue
-            rad = SEEK if it['kind'] == 'laser' else LOOT_R
+            rad = SEEK if it['kind'] == 'lightning' else LOOT_R
             if hyp(it['pos'][0] - x, it['pos'][1] - y) < rad:
                 v = 130.0 if empty else 60.0
-                if it['kind'] == 'laser':
+                if it['kind'] == 'lightning':
                     v = max(v, 150.0)
                 cands.append(('pickup', it, v))
         cube_v = 25.0 if me['cubes'] >= self.cube_cap else 75.0
@@ -752,7 +752,7 @@ class Bot:
                     continue
                 if now + distance / walk + 6 > self.zone_deadline(z, p[0], p[1], 6):
                     continue
-                cost = distance / walk + (0 if pick['kind'] == 'laser' else 1.7)
+                cost = distance / walk + (0 if pick['kind'] == 'lightning' else 1.7)
                 if cost < best_cost:
                     best_cost, best_pick = cost, p
             if best_pick is not None:
