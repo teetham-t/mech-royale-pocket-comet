@@ -19,8 +19,9 @@ F = set(os.environ.get("FLAGS", "").split(","))
 TAU = 2 * math.pi
 LAT = 0.075          # our action lands about one tick after the observation
 
-UPGRADES = ['plating', 'armor', 'laser_damage', 'laser_charge', 'nanites', 'gun_damage', 'gun_rate',
-            'lightning_efficiency', 'lightning_range', 'servos', 'gun_mag', 'gun_velocity', 'gyros',
+# gun_mag first: 12 -> 20 rounds and -20% reload lifts sustained gun damage ~31% (gun_damage +15%, gun_rate ~+8%)
+UPGRADES = ['gun_mag', 'plating', 'armor', 'laser_damage', 'laser_charge', 'nanites', 'gun_damage', 'gun_rate',
+            'lightning_efficiency', 'lightning_range', 'servos', 'gun_velocity', 'gyros',
             'lightning_chain', 'reactor', 'capacitor', 'mortar_reload', 'mortar_splash', 'mortar_velocity',
             'sensors', 'jets', 'laser_pierce']
 PREF = {'laser': 4, 'lightning': 3}          # we never take mortars
