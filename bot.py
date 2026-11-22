@@ -867,7 +867,15 @@ class Bot:
                     if ch < full - 0.051:
                         fire[i] = True
                         if ch > full * 0.45:
-                            aim = [hy, hpch]
+                            # Both triggers use the torso. Allow one available gun shot
+                            # when there is still time to line up the charged beam.
+                            gun_due = (gun_ok and gun.get('ammo', 0) > 0
+                                       and gun.get('reload', 0) <= 0
+                                       and gun.get('cooldown', 0) <= 0.1 and slew_ok(gy, gp))
+                            yaw_time = abs(wrap(gy - hy)) / max(0.01, st.get('turn_rate', 4))
+                            pitch_time = abs(gp - hpch) / max(0.01, st.get('pitch_rate', 3))
+                            if not gun_due or full - ch <= 0.15 + max(yaw_time, pitch_time):
+                                aim = [hy, hpch]
                     else:
                         aim = [hy, hpch]
                         fire[i] = not tight
