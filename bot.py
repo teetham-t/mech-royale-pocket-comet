@@ -759,6 +759,26 @@ class Bot:
                 mx, my = self.travel(me, best_pick[0], best_pick[1])
                 boost = energy > 28 and best_cost > .5
                 mode = 'equip'
+        # Laser rush: matches where we hold a laser early score far more. Until 150 s, with no laser in
+        # hand, head for the nearest remembered laser we can reach in time. Aim and fire are unchanged,
+        # so we keep shooting whatever we fight while we move; retreat and must-reach-zone come first.
+        if las is None and now < 150 and not zone_must and not retreat and mode != 'unstuck':
+            rush = None
+            for pick, last in self.picks.values():
+                if pick['kind'] != 'laser' or now - last > 30 or now - self.failed.get(pick['id'], -99) < 3:
+                    continue
+                p = pick['pos']
+                dist = hyp(p[0] - x, p[1] - y)
+                if dist > 260 or abs(p[2] - self.m.ground(p[0], p[1])) > 3.2:
+                    continue
+                if now + dist / walk + 6 > self.zone_deadline(z, p[0], p[1], 6):
+                    continue
+                if rush is None or dist < rush[0]:
+                    rush = (dist, p)
+            if rush is not None:
+                mx, my = self.travel(me, rush[1][0], rush[1][1])
+                boost = energy > 20 and rush[0] > 8
+                mode = 'laser-rush'
         dx, dy, beam = self.dodge(obs)
         if (dx or dy) and mode != 'unstuck':
             mx, my = mx * 0.4 + dx * 0.9, my * 0.4 + dy * 0.9
