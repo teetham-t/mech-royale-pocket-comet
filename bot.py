@@ -1,7 +1,7 @@
 """Mech Royale bot v2: laser sniper that keeps house bots at long range, camps the zone edge
 away from enemies, farms cubes early, and breaks line of sight when focused."""
 import math, random, sys, time, os
-F = set(os.environ.get("FLAGS", "patrol,nohide,zfix,dodge").split(","))
+F = set(os.environ.get("FLAGS", "patrol,nohide,zfix,dodge,hold").split(","))
 E = lambda k, d: float(os.environ.get(k, d))
 PFRAC = E("PFRAC", 0.85); PSPD = E("PSPD", 0.043); FARMT = E("FARMT", 150); FARMC = E("FARMC", 6); TRL = E("TRL", 220); TRN = E("TRN", 180); NL = E("NL", 150); NN = E("NN", 105); KW = E("KW", 1.0); WOUND = E("WOUND", 0.62); AVR = E("AVR", 130); AVW = E("AVW", 0.8)
 import mechfight as mf
@@ -13,6 +13,8 @@ UPG_ORDER = ['plating', 'armor', 'nanites', 'laser_charge', 'laser_damage', 'gun
              'gun_velocity', 'reactor', 'capacitor', 'jets', 'sensors', 'mortar_reload', 'mortar_splash',
              'mortar_velocity', 'laser_pierce']
 RANK = {None: 0, 'gun': 0, 'mortar': 0, 'lightning': 1, 'laser': 2}
+if 'ltn' in F:
+    RANK = {None: 0, 'gun': 0, 'mortar': 0, 'lightning': 2, 'laser': 1}
 
 
 def wrap(a):
@@ -28,7 +30,7 @@ def ang(a, b):
 
 
 class Bot:
-    name = "comet-v6"
+    name = "comet-v7a"
 
     def __init__(self, hello):
         self.cfg = hello['config']
@@ -51,6 +53,7 @@ class Bot:
         self.kills_at = []
         self.mode = ''
         self.failed = {}
+        self.hold_spot = None; self.hold_key = None; self.hold_t = -99
 
     # ---------------------------------------------------------------- helpers
     def size(self, tgt):
@@ -174,6 +177,26 @@ class Bot:
             if s > bs:
                 bs = s; best = (cx, cy)
         return best or (nc[0], nc[1])
+
+    # ---------------------------------------------------------------- hold spot
+    def pick_hold(self, pos, nc, nr, cc, cr, far_hit):
+        """Most concealed walkable cell (precomputed exposure, counts canopy) inside the next
+        circle, traded off against walking distance; avoid the side we were just shot from."""
+        lim = nr * 0.8 if nr > 30 else nr * 0.6
+        best = None; bs = 1e9
+        for e, c in self.m.cells_sorted:
+            if e > 120:
+                break
+            x, y = self.m.cell_xy(c)
+            if d2((x, y), nc) > lim or d2((x, y), cc) > cr - 10:
+                continue
+            dist = d2((x, y), pos)
+            sc = e + 0.15 * dist
+            if far_hit and self.dmg_bearing is not None and dist > 1 and math.cos(ang(pos, (x, y)) - self.dmg_bearing) > 0.3:
+                sc += 40
+            if sc < bs:
+                bs = sc; best = (x, y)
+        return best
 
     # ---------------------------------------------------------------- targets
     def choose_target(self, obs, me, enemies, muzzle, wounded, urgent, sniping):
@@ -339,6 +362,15 @@ class Bot:
         if 'patrol' in F:
             a_ = self.phase + t * PSPD
             goal = (nc[0] + math.cos(a_) * nr * PFRAC, nc[1] + math.sin(a_) * nr * PFRAC)
+        if 'hold' in F:
+            far_hit = t - self.dmg_t < 1.0 and not any(d2(pos, e['pos']) < 60 for e in enemies)
+            if (self.hold_spot is None or self.hold_key != zk or t - self.hold_t > 20
+                    or (far_hit and t - self.hold_t > 3)):
+                if time.perf_counter() - t0 < 0.012 or DET:
+                    self.hold_spot = self.pick_hold(pos, nc, nr, cc, cr, far_hit)
+                    self.hold_key = zk; self.hold_t = t
+            if self.hold_spot is not None:
+                goal = self.hold_spot
         stop_r = min(3.0, max(0.5, nr * 0.2))
         if urgent:
             goal = self.camp if d2(self.camp, nc) < nr else nc
@@ -376,7 +408,9 @@ class Bot:
                 if tkind == 'npc' and me['cubes'] < 10:
                     consider(target, 85, 22)
             for it in loot:
-                v = {'laser': 260 if opening else 200, 'lightning': 120 if opening else 80}.get(it['kind'], 83 if opening else 52)
+                vals = ({'lightning': 260 if opening else 200, 'laser': 120 if opening else 80} if 'ltn' in F
+                        else {'laser': 260 if opening else 200, 'lightning': 120 if opening else 80})
+                v = vals.get(it['kind'], 83 if opening else 52)
                 consider(it, v, 1.5)
             for c in obs['cubes']:
                 consider(c, 86 if not nearby else 24, 1.5)
@@ -392,7 +426,7 @@ class Bot:
             for k, p in list(self.lasers.items()):
                 if d2(p, z['center']) > z['radius'] or (k not in {q['id'] for q in obs['pickups']} and math.dist(pos, p) < 15):
                     del self.lasers[k]
-            if not sniping and self.lasers and not laser_run:
+            if not sniping and self.lasers and not laser_run and not ('ltn' in F and lig_i is not None):
                 k = min(self.lasers, key=lambda k: d2(pos, self.lasers[k]))
                 p = self.lasers[k]
                 if d2(pos, p) <= 250 and self.reachable_item(p):
@@ -470,7 +504,15 @@ class Bot:
         self.heading = heading
         gd = d2(pos, goal) if goal is not None else 0
         stop = goal is not None and gd < stop_r and (not nearby or nr < 4)
+        holding = 'hold' in F and self.hold_spot is not None and goal is not None and d2(goal, self.hold_spot) < 0.5
+        close_fight = tkind == 'mech' and tdist < 60
+        if holding and not urgent and gd < 2.5 and not close_fight:
+            stop = True  # stand still at the hold spot: silent and concealed
         act['move'] = [0.0, 0.0] if stop else [math.cos(heading), math.sin(heading)]
+        quiet = (holding and not urgent and not stop and not close_fight and not lasers_on_us
+                 and any(d2(pos, e['pos']) < 100 for e in enemies))
+        if quiet:
+            act['move'] = [act['move'][0] * 0.4, act['move'][1] * 0.4]  # under 5 m/s: no step sounds
         # unstick
         if self.anchor is None or t - self.anchor_t >= 1.2:
             if self.anchor and d2(pos, self.anchor) < 2 and not stop and me['energy'] > 28:
@@ -485,6 +527,8 @@ class Bot:
         kite = sniping and can_sprint and any(d2(pos, e['pos']) < 95 for e in nearby) and me['energy'] > 25
         act['boost'] = bool(jet or kite or (lasers_on_us and can_sprint and me['energy'] > 15) or (can_sprint and (((urgent or hiding or (nearby and wounded)) and me['energy'] > 30)
                                                        or ((rush or chase or laser_run) and me['energy'] > 66))))
+        if quiet and not jet:
+            act['boost'] = False
 
         # ---------------- aim & fire
         fire = [False, False]
