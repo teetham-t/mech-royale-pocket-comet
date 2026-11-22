@@ -450,6 +450,13 @@ class Bot:
                 return 8.0
         return 0.0
 
+    def pickup_delay(self, item, distance, walk, origin):
+        delay = self.pickup_race_delay(item, distance, walk)
+        if distance > 2 * self.pick_r and not self.m.walk_line(origin, item['pos']):
+            # A straight-line ETA understates the trip when terrain forces a detour.
+            delay += min(3.0, 0.4 * distance / walk)
+        return delay
+
     def choose_loot(self, obs, hp, danger):
         me = obs['self']; x, y = me['pos'][0], me['pos'][1]
         z = obs['zone']; now = self.now
@@ -492,7 +499,7 @@ class Bot:
                 continue
             if kind != 'npc' and p[2] - self.m.ground(p[0], p[1]) > 3.2:
                 continue
-            race_delay = self.pickup_race_delay(it, d, walk) if kind == 'pickup' else 0.0
+            race_delay = self.pickup_delay(it, d, walk, (x, y)) if kind == 'pickup' else 0.0
             u = v / (d + 18 + walk * race_delay)
             if iid == self.loot_id:
                 u *= 1.35
@@ -771,7 +778,7 @@ class Bot:
                 if now + distance / walk + 6 > self.zone_deadline(z, p[0], p[1], 6):
                     continue
                 cost = distance / walk + (0 if pick['kind'] == 'laser' else 1.7)
-                cost += self.pickup_race_delay(pick, distance, walk)
+                cost += self.pickup_delay(pick, distance, walk, (x, y))
                 if cost < best_cost:
                     best_cost, best_pick = cost, p
             if best_pick is not None:
