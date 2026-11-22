@@ -86,6 +86,7 @@ class Bot:
         self.stuck_since = None; self.stuck_n = 0; self.unstuck_until = -1.0; self.unstuck_dir = (1.0, 0.0)
         self.hold = None; self.hold_start = None
         self.kills = 0; self.start_alive = None; self.odd_deaths = 0; self.ffa = False
+        self.dead_seen = 0; self.credited = 0; self.mech_hit_t = -99.0
         self.last_aim = None
         self.t0 = 0.0
         ms = self.cfg['mech']
@@ -221,15 +222,26 @@ class Bot:
                 self.foes.pop(ev.get('target'), None)
             elif ty == 'take_failed':
                 self.failed[ev.get('id')] = now
+            elif ty == 'hit' and (ev.get('target') if ev.get('target') is not None else 999) < 100:
+                self.mech_hit_t = now
 
-        # free-for-all detection: other mechs dying without our help means it is not a squad game
+        # Free-for-all detection. In practice the house squad never fights itself, but a mech we wounded can
+        # still be finished by a drone, the zone or a squad-mate's stray bullet: a death within 6 s of us
+        # hitting a mech counts as ours. Only 2 unexplained deaths (held 3 decisions) switch to free-for-all;
+        # in a real free-for-all many mechs die early, so that still triggers fast.
         if self.start_alive is None:
             self.start_alive = obs['alive']
-        if self.start_alive - obs['alive'] - self.kills > 0:
+        dead = self.start_alive - obs['alive']
+        while self.dead_seen < dead:
+            self.dead_seen += 1
+            if now - self.mech_hit_t < 6 and self.dead_seen - self.kills - self.credited > 0:
+                self.credited += 1
+        self.credited = min(self.credited, max(0, dead - self.kills))
+        if dead - self.kills - self.credited >= 2:
             self.odd_deaths += 1
         else:
             self.odd_deaths = 0
-        if self.odd_deaths >= 5:
+        if self.odd_deaths >= 3:
             self.ffa = True
 
         z = obs['zone']
