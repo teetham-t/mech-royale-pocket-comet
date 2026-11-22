@@ -3,7 +3,7 @@ away from enemies, farms cubes early, and breaks line of sight when focused."""
 import math, random, sys, time, os
 F = set(os.environ.get("FLAGS", "patrol,nohide,zfix,dodge,hold").split(","))
 E = lambda k, d: float(os.environ.get(k, d))
-PFRAC = E("PFRAC", 0.85); PSPD = E("PSPD", 0.043); FARMT = E("FARMT", 150); FARMC = E("FARMC", 6); TRL = E("TRL", 220); TRN = E("TRN", 180); NL = E("NL", 150); NN = E("NN", 105); KW = E("KW", 1.0); WOUND = E("WOUND", 0.62); AVR = E("AVR", 130); AVW = E("AVW", 0.8)
+PFRAC = E("PFRAC", 0.85); PSPD = E("PSPD", 0.043); FARMT = E("FARMT", 150); FARMC = E("FARMC", 6); TRL = E("TRL", 110); TRN = E("TRN", 70); NL = E("NL", 150); NN = E("NN", 105); KW = E("KW", 1.0); WOUND = E("WOUND", 0.62); AVR = E("AVR", 130); AVW = E("AVW", 0.8)
 import mechfight as mf
 from geo import Map, AStar, DET
 
@@ -30,7 +30,7 @@ def ang(a, b):
 
 
 class Bot:
-    name = "comet-v7a"
+    name = "comet-v7b"
 
     def __init__(self, hello):
         self.cfg = hello['config']
