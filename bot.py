@@ -3,7 +3,7 @@ away from enemies, farms cubes early, and breaks line of sight when focused."""
 import math, random, sys, time, os
 F = set(os.environ.get("FLAGS", "patrol,nohide,zfix,dodge,hold").split(","))
 E = lambda k, d: float(os.environ.get(k, d))
-PFRAC = E("PFRAC", 0.85); PSPD = E("PSPD", 0.043); FARMT = E("FARMT", 150); FARMC = E("FARMC", 6); TRL = E("TRL", 110); TRN = E("TRN", 70); NL = E("NL", 150); NN = E("NN", 105); KW = E("KW", 1.0); WOUND = E("WOUND", 0.62); AVR = E("AVR", 130); AVW = E("AVW", 0.8)
+PFRAC = E("PFRAC", 0.85); PSPD = E("PSPD", 0.043); FARMT = E("FARMT", 150); FARMC = E("FARMC", 6); TRL = E("TRL", 220); TRN = E("TRN", 180); NL = E("NL", 150); NN = E("NN", 105); KW = E("KW", 1.0); WOUND = E("WOUND", 0.62); AVR = E("AVR", 130); AVW = E("AVW", 0.8)
 import mechfight as mf
 from geo import Map, AStar, DET
 
@@ -30,7 +30,7 @@ def ang(a, b):
 
 
 class Bot:
-    name = "comet-v7b"
+    name = "comet-v7a"
 
     def __init__(self, hello):
         self.cfg = hello['config']
@@ -54,6 +54,8 @@ class Bot:
         self.mode = ''
         self.failed = {}
         self.hold_spot = None; self.hold_key = None; self.hold_t = -99
+        # concealed candidate cells (exposure <= 120), coordinates precomputed once
+        self.hold_cells = [(e,) + self.m.cell_xy(c) for e, c in self.m.cells_sorted if e <= 120] if 'hold' in F else []
 
     # ---------------------------------------------------------------- helpers
     def size(self, tgt):
@@ -183,14 +185,19 @@ class Bot:
         """Most concealed walkable cell (precomputed exposure, counts canopy) inside the next
         circle, traded off against walking distance; avoid the side we were just shot from."""
         lim = nr * 0.8 if nr > 30 else nr * 0.6
+        lim2 = lim * lim; cr2 = max(0.0, cr - 10) ** 2
+        ncx, ncy = nc[0], nc[1]; ccx, ccy = cc[0], cc[1]; px, py = pos[0], pos[1]
         best = None; bs = 1e9
-        for e, c in self.m.cells_sorted:
-            if e > 120:
-                break
-            x, y = self.m.cell_xy(c)
-            if d2((x, y), nc) > lim or d2((x, y), cc) > cr - 10:
+        for e, x, y in self.hold_cells:
+            if e + 0.0 >= bs:
+                break  # cells are sorted by exposure, so nothing later can win
+            dx = x - ncx; dy = y - ncy
+            if dx * dx + dy * dy > lim2:
                 continue
-            dist = d2((x, y), pos)
+            dx = x - ccx; dy = y - ccy
+            if dx * dx + dy * dy > cr2:
+                continue
+            dist = math.hypot(x - px, y - py)
             sc = e + 0.15 * dist
             if far_hit and self.dmg_bearing is not None and dist > 1 and math.cos(ang(pos, (x, y)) - self.dmg_bearing) > 0.3:
                 sc += 40
