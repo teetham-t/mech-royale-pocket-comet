@@ -192,7 +192,7 @@ class Bot:
             for k in [k for k, f in tab.items() if now - f.seen > keep]:
                 del tab[k]
 
-        def refresh(tab, items):
+        def refresh(tab, items, gone=None):
             for it in items:
                 tab[it['id']] = [it, now]
             for k in list(tab):
@@ -200,9 +200,33 @@ class Bot:
                 if seen == now:
                     continue
                 p = it['pos']
-                if hyp(p[0] - x, p[1] - y) < 40 and now - seen > 0.35 and self.m.los(eye, (p[0], p[1], p[2] + 1.5)):
+                if gone is not None:
+                    if now - seen > 0.35 and gone(p):
+                        del tab[k]
+                elif hyp(p[0] - x, p[1] - y) < 40 and now - seen > 0.35 and self.m.los(eye, (p[0], p[1], p[2] + 1.5)):
                     del tab[k]
-        refresh(self.crates, obs['crates']); refresh(self.cubes, obs['cubes']); refresh(self.picks, obs['pickups'])
+
+        # A weapon pickup is listed whenever we can see it (protocol, Vision): within near_range in any
+        # direction (walls block, canopy does not), or within range inside the fov_deg wedge around our
+        # actual torso yaw (walls and dense canopy block). If its spot is visible and it is not listed,
+        # someone took it. Anywhere we cannot see (behind us past near_range, behind a wall, under
+        # canopy) the memory is kept.
+        vis = self.cfg.get('vision', {}); st = me['stats']
+        near = vis.get('near_range', 45) + st.get('near_range_bonus', 0)
+        far = vis.get('range', 200) + st.get('vision_bonus', 0)
+        half = math.radians(vis.get('fov_deg', 120)) / 2
+        yaw = me['aim'][0]
+
+        def pickup_gone(p):
+            d = hyp(p[0] - x, p[1] - y)
+            top = (p[0], p[1], p[2] + 0.6)
+            if d < near - 1:
+                return self.m.los(eye, top)
+            if d < far - 5 and abs(wrap(math.atan2(p[1] - y, p[0] - x) - yaw)) < half - 0.1:
+                return self.m.sees(eye, top)
+            return False
+        refresh(self.crates, obs['crates']); refresh(self.cubes, obs['cubes'])
+        refresh(self.picks, obs['pickups'], pickup_gone)
 
         for ev in obs['events']:
             ty = ev.get('type')
