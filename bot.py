@@ -729,6 +729,8 @@ class Bot:
                         farm_pt = cp
                         if d < 12:
                             mx, my = (x - p[0]) / max(d, 0.1), (y - p[1]) / max(d, 0.1)
+                        elif d > 16 and las is None:
+                            mx, my = self.travel(me, p[0], p[1])
                     else:
                         mx, my = self.travel(me, p[0], p[1])
                 else:
