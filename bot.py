@@ -306,6 +306,11 @@ class Bot:
                 self.strafe = -self.strafe
             self.strafe_until = self.now + 0.3 + self.rng.random() * 0.7
         sx, sy = -uy * self.strafe, ux * self.strafe
+        # A side-step alone cannot hold range against a pursuer walking straight in.
+        vx, vy = o.get('vel', (0, 0, 0))[:2]
+        pressed = (o['kind'] == 'mech' and 'lightning' not in ws and rp > FIN_R
+                   and bd < rp * 0.85 and -(vx * ux + vy * uy) > 3)
+
         tc = self.centre(o)
         mh = me['stats'].get('muzzle_height', 7); bh = me['stats'].get('height', 9) * 0.6
         others = sorted((f for f in seen if f is not tgt and f.seen == self.now and f.dist < 200), key=lambda f: f.dist)[:3]
@@ -332,6 +337,9 @@ class Bot:
             cz = self.m.ground(cx, cy)
             d = hyp(o['pos'][0] - cx, o['pos'][1] - cy)
             s = -1.1 * abs(d - rp) - 0.4 * r
+            if pressed:
+                s += 2.0 * (d - bd)
+
             los = self.m.los((cx, cy, cz + mh), tc)
             if los:
                 s += 45 * want_los
@@ -713,6 +721,13 @@ class Bot:
                     boost = True
             else:
                 mx, my = self.fight_move(obs, wk, target, seen, want_los)
+                if zap is None and me['grounded'] and energy > 35:
+                    tx, ty = target.o['pos'][0] - x, target.o['pos'][1] - y
+                    vx, vy = target.o.get('vel', (0, 0, 0))[:2]
+                    if (target.dist < 0.85 * self.pref_range(me, wk, target.o)
+                            and vx * tx + vy * ty < -3 * target.dist
+                            and mx * tx + my * ty < -0.5 * target.dist):
+                        boost = True
             if zap is not None and target.dist > 50 and energy > 55:
                 boost = True
             mode = 'fight'
