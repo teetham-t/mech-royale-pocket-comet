@@ -740,7 +740,29 @@ class Bot:
             elif zdist > 3:
                 mx, my = self.travel(me, zgx, zgy); mode = 'zone-walk'
 
-        if not zone_must and not retreat and wl[1] is None and now < 100:
+        if not zone_must and hp < .76 and mode not in ('equip', 'unstuck'):
+            for drop in obs.get('drops', []):
+                p = drop['pos']
+                distance = hyp(p[0] - x, p[1] - y)
+                if distance > 90 or abs(p[2] - self.m.ground(p[0], p[1])) > 3:
+                    continue
+                eta = distance / walk
+                remaining = drop['capture_s'] - (drop['progress'] if drop['holder'] == me['id'] else 0)
+                finish = max(eta, drop['lands_in']) + remaining
+                if finish > 10 or now + finish + 4 > self.zone_deadline(z, p[0], p[1], 6):
+                    continue
+                if any(hyp(f.o['pos'][0] - p[0], f.o['pos'][1] - p[1]) < drop['radius'] + 6 * remaining
+                       for f in seen if now - f.seen < 1):
+                    continue
+                if distance < drop['radius'] * .65:
+                    mx = my = 0
+                    boost = False
+                else:
+                    mx, my = self.travel(me, p[0], p[1])
+                    boost = energy > 25
+                mode = 'repair'
+                break
+        if mode != 'repair' and not zone_must and not retreat and wl[1] is None and now < 100:
             best_pick = None
             best_cost = 10.0 if target is None else 4.0
             for pick, last in self.picks.values():
